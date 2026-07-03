@@ -32,13 +32,14 @@ import {
     startable_labels,
 } from "@live-connector/lom-schema"
 import type { TargetApiVersion } from "../deps"
+import type { VirtualLabelSources, VirtualNode } from "./create-adapter"
 
 type V = TargetApiVersion
 
 type ObjectNode = { type: "object"; label: string; value: DataModelObject<V>; index: number | null }
 type NoteNode = { type: "note"; label: "Note"; value: NoteDescription; index: number }
 
-export type LomNode = ObjectNode | NoteNode
+export type LomNode = ObjectNode | NoteNode | VirtualNode
 
 const VALID_RELATIONSHIP_TYPES = new Set(
     LOM_SCHEMA.relationships.map((relationship) => relationship.type),
@@ -106,9 +107,14 @@ function objectNode(value: DataModelObject<V>, label: string, index: number | nu
 /** Cypher 評価器の GraphAdapter を LOM（Ableton SDK）に束ねる実装。 */
 export class LomGraphAdapter implements GraphAdapter<LomNode> {
     private readonly context: ExtensionContext<V>
+    private readonly virtual_sources: VirtualLabelSources
 
-    constructor(context: ExtensionContext<V>) {
+    constructor(context: ExtensionContext<V>, virtual_sources?: VirtualLabelSources) {
         this.context = context
+        this.virtual_sources = virtual_sources ?? {
+            listWriteEvents: async () => [],
+            listRenderJobs: async () => [],
+        }
     }
 
     private get song(): Song<V> {
@@ -171,6 +177,40 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
         if (label === "CuePoint") {
             return song.cuePoints.map((cue, index) => objectNode(cue, "CuePoint", index))
         }
+        if (label === "WriteEvent") {
+            const events = await this.virtual_sources.listWriteEvents()
+            return events.map(
+                (event): VirtualNode => ({
+                    type: "virtual",
+                    label: "WriteEvent",
+                    id: event.id,
+                    properties: {
+                        id: event.id,
+                        time: event.time,
+                        kind: event.kind,
+                        statement: event.statement,
+                        undoable: event.undoable,
+                        status: event.status,
+                    },
+                }),
+            )
+        }
+        if (label === "RenderJob") {
+            const jobs = await this.virtual_sources.listRenderJobs()
+            return jobs.map(
+                (job): VirtualNode => ({
+                    type: "virtual",
+                    label: "RenderJob",
+                    id: job.id,
+                    properties: {
+                        id: job.id,
+                        status: job.status,
+                        ...(job.filePath !== undefined ? { filePath: job.filePath } : {}),
+                        ...(job.error !== undefined ? { error: job.error } : {}),
+                    },
+                }),
+            )
+        }
         throw new BadRequestError(
             `Label "${label}" cannot start a pattern. Usable start labels: ${startable_label_hint}. For labels such as Note, Parameter, ClipSlot, Mixer, Chain or TakeLane, start from a usable label and expand with relationships.`,
             { hint: unusable_start_label_hint, validStartLabels: startable_labels },
@@ -178,6 +218,9 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
     }
 
     async expand(node: LomNode, relationshipTypes: string[]): Promise<LomNode[]> {
+        if (node.type === "virtual") {
+            return []
+        }
         const out: LomNode[] = []
         for (const relationshipType of relationshipTypes) {
             out.push(...this.expandOne(node, relationshipType))
@@ -195,7 +238,7 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
                 },
             )
         }
-        if (node.type === "note") {
+        if (node.type === "note" || node.type === "virtual") {
             return []
         }
         const value = node.value
@@ -299,10 +342,17 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
     }
 
     matchesLabel(node: LomNode, label: string): boolean {
+        if (node.type === "virtual") {
+            return node.label === label
+        }
         return isSubtypeOf(node.label, label)
     }
 
     async getProperty(node: LomNode, property: string): Promise<ScalarValue> {
+        if (node.type === "virtual") {
+            const value = node.properties[property]
+            return value ?? null
+        }
         const raw = await this.readRaw(node, property)
         if (
             raw === null ||
@@ -316,6 +366,9 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
     }
 
     async serialize(node: LomNode): Promise<Record<string, unknown>> {
+        if (node.type === "virtual") {
+            return { _label: node.label, ...node.properties }
+        }
         const out: Record<string, unknown> = { _label: node.label }
         for (const property of propertiesForLabel(node.label)) {
             out[property.name] = await this.readRaw(node, property.name)
@@ -324,10 +377,18 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
     }
 
     identity(node: LomNode): unknown {
+        if (node.type === "virtual") {
+            return node.id
+        }
         return node.value
     }
 
     async setProperty(node: LomNode, property: string, value: ScalarValue): Promise<void> {
+        if (node.type === "virtual") {
+            throw new BadRequestError(`Cannot write to virtual label ${node.label}`, {
+                hint: "WriteEvent and RenderJob are read-only query seeds.",
+            })
+        }
         if (node.type === "note") {
             throw new BadRequestError("Note properties are written via write_notes, not set_*")
         }
@@ -499,6 +560,9 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
     }
 
     private async readRaw(node: LomNode, property: string): Promise<unknown> {
+        if (node.type === "virtual") {
+            return node.properties[property] ?? null
+        }
         if (node.type === "note") {
             return this.readNote(node, property)
         }

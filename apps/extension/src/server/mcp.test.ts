@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { ServerDeps } from "../deps"
 
-// SDK 実体をロードせずに register* を通す。version.ts の注入はグローバルで代替する。
 vi.mock("@ableton-extensions/sdk", () => import("../test-support/fake-sdk"))
 
 async function loadDescribe() {
@@ -11,22 +10,12 @@ async function loadDescribe() {
 }
 
 describe("describeRegisteredTools", () => {
-    it("collects the actual registered tool names via the shared registration path", async () => {
+    it("collects the four registered tools via the shared registration path", async () => {
         const describeRegisteredTools = await loadDescribe()
         const summary = describeRegisteredTools({} as unknown as ServerDeps)
 
-        // /health が稼働ホストのツール構成を反映するための代表ツール。
-        expect(summary.names).toEqual(
-            expect.arrayContaining([
-                "schema",
-                "query",
-                "get_overview",
-                "write_notes",
-                "insert_device",
-                "set_device_parameter",
-            ]),
-        )
-        expect(summary.count).toBe(summary.names.length)
+        expect(summary.names).toEqual(["do", "meta", "render", "undo"])
+        expect(summary.count).toBe(4)
         expect(new Set(summary.names).size).toBe(summary.names.length)
     })
 
@@ -41,7 +30,6 @@ describe("describeRegisteredTools", () => {
     it("produces a digest that changes when the tool set changes", async () => {
         const describeRegisteredTools = await loadDescribe()
         const summary = describeRegisteredTools({} as unknown as ServerDeps)
-        // 同一構成なら安定、構成差異でダイジェストが変わることを別集合との比較で確認する。
         const otherDigest = digestOf([...summary.names, "extra_tool"])
         expect(otherDigest).not.toBe(summary.digest)
     })
