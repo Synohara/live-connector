@@ -16,19 +16,39 @@ source_files:
         - "apps/extension/src/version.ts"
         - "apps/extension/src/server/http.ts"
         - "apps/extension/src/server/mcp.ts"
+        - "apps/extension/src/server/annotations.ts"
     tools:
-        - "apps/extension/src/tools/schema.ts"
-        - "apps/extension/src/tools/overview.ts"
-        - "apps/extension/src/tools/query.ts"
-        - "apps/extension/src/tools/audio.ts"
-        - "apps/extension/src/tools/arrangement.ts"
-        - "apps/extension/src/tools/create.ts"
-        - "apps/extension/src/tools/devices.ts"
-        - "apps/extension/src/tools/presets.ts"
-        - "apps/extension/src/tools/write.ts"
-        - "apps/extension/src/tools/notes.ts"
+        - "apps/extension/src/tools/common.ts"
+        - "apps/extension/src/tools/meta.ts"
+        - "apps/extension/src/tools/do.ts"
+        - "apps/extension/src/tools/do/read.ts"
+        - "apps/extension/src/tools/do/set.ts"
+        - "apps/extension/src/tools/do/create.ts"
+        - "apps/extension/src/tools/do/delete.ts"
+        - "apps/extension/src/tools/do/copy.ts"
+        - "apps/extension/src/tools/do/schemas.ts"
+        - "apps/extension/src/tools/do/write-support.ts"
+        - "apps/extension/src/tools/do/arrangement-edit.ts"
+        - "apps/extension/src/tools/do/notes.ts"
+        - "apps/extension/src/tools/do/devices.ts"
+        - "apps/extension/src/tools/do/samples.ts"
+        - "apps/extension/src/tools/do/structure.ts"
+        - "apps/extension/src/tools/do/row-cap.ts"
+        - "apps/extension/src/tools/undo.ts"
+        - "apps/extension/src/tools/render.ts"
+    undo:
+        - "apps/extension/src/undo/types.ts"
+        - "apps/extension/src/undo/log.ts"
+        - "apps/extension/src/undo/restore.ts"
+        - "apps/extension/src/undo/recreate.ts"
+        - "apps/extension/src/undo/locate.ts"
+        - "apps/extension/src/undo/identity.ts"
+        - "apps/extension/src/undo/blueprint.ts"
+    render:
+        - "apps/extension/src/render/jobs.ts"
     lom_adapter:
         - "apps/extension/src/lom/adapter.ts"
+        - "apps/extension/src/lom/create-adapter.ts"
     packages:
         - "packages/cypher/src/ast.ts"
         - "packages/cypher/src/evaluator.ts"
@@ -122,7 +142,7 @@ models:
           - name: "version"
             type: "string"
             required: true
-            value: "2.17.17"
+            value: "3.0.0"
             note: "バージョンの正本は VERSION。build.ts が manifest.json / package.json と一致を検証し、__LIVE_CONNECTOR_VERSION__ としてバンドルへ注入する。"
           - name: "entry"
             type: "string"
@@ -139,7 +159,7 @@ models:
           - name: "value"
             type: "semver"
             required: true
-            value: "2.17.17"
+            value: "3.0.0"
 
     - name: "Env"
       kind: "configuration"
@@ -212,7 +232,7 @@ models:
           - name: "version"
             type: "string"
             required: true
-            value: "2.17.17"
+            value: "3.0.0"
           - name: "description"
             type: "string"
             required: true
@@ -241,7 +261,7 @@ models:
 
     - name: "TextContent"
       kind: "mcp_content"
-      source: "apps/extension/src/tools/write.ts"
+      source: "apps/extension/src/tools/common.ts"
       fields:
           - name: "type"
             type: "\"text\""
@@ -252,7 +272,7 @@ models:
 
     - name: "ToolResult"
       kind: "mcp_result"
-      source: "apps/extension/src/tools/write.ts"
+      source: "apps/extension/src/tools/common.ts"
       fields:
           - name: "content"
             type: "TextContent[]"
@@ -670,7 +690,7 @@ models:
           - name: "time_coordinates"
             type: "{ absolute: string; relative: string }"
             required: true
-            note: "アレンジメント絶対拍とクリップ相対拍の 2 系統。write_notes は相対拍。"
+            note: "アレンジメント絶対拍とクリップ相対拍の 2 系統。Note / MidiClip SET notes は相対拍。"
           - name: "read"
             type: "{ tool: string; return_contract: string; allowed_returns: string[] }"
             required: true
@@ -737,30 +757,20 @@ mcp_tools:
     - name: "McpServerMetadata"
       kind: "mcp_metadata"
       source: "apps/extension/src/server/mcp.ts"
-      note: "initialize 応答の instructions（推奨手順・時刻座標・ガードレール・ミキサー経路の要約）と、withToolAnnotations facade による tool annotations。区分: read=readOnlyHint / delete_*・write_notes・transform_notes・batch=destructiveHint（MCP 仕様の destructiveHint:false は additive のみのため、置換・削除を行うツールは true）/ restore_snapshot・load_sample=destructive かつ idempotent（置換書き込み）/ set_*・apply_device_state・move_clip・trim_clip=idempotentHint（絶対指定の再適用同結果）。正本は apps/extension/src/server/annotations.ts の TOOL_ANNOTATIONS で、登録ツールとの網羅一致は annotations.test.ts で固定。"
+      note: "initialize 応答の instructions（推奨手順 meta→do read→do write→render→undo、時刻座標・ガードレール）と、withToolAnnotations facade による tool annotations。区分: meta=readOnlyHint / do=destructiveHint（読み書き統合）/ undo=destructiveHint+idempotentHint:false / render=非破壊レンダリング。正本は apps/extension/src/server/annotations.ts の TOOL_ANNOTATIONS（4 件）、網羅一致は annotations.test.ts で固定。"
       decisions:
-          mixer_write: "volume/panning/send は HAS_MIXER→Parameter 経由で set_device_parameter に統一する（set_track へ直接プロパティ追加はしない）。理由: ミキサー値は min/max/quantized を持つ Parameter で set_device_parameter が一貫して扱えるため。"
-          mcp_prompts: "本 release では MCP prompts を採用しない。定型ワークフローの配布は instructions で代替する。採用時は別 Issue に分割する。"
+          mixer_write: "volume/panning/send は HAS_MIXER→Parameter 経由で do SET Parameter.value に統一する。"
+          mcp_prompts: "本 release では MCP prompts を採用しない。定型ワークフローの配布は instructions で代替する。"
 
-    - name: "schema"
-      source: "apps/extension/src/tools/schema.ts"
-      input: null
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  schema: "LomSchema"
-                  query_contract: "QueryContract"
-                  examples: "string[]"
-
-    - name: "get_overview"
-      source: "apps/extension/src/tools/overview.ts"
+    - name: "meta"
+      source: "apps/extension/src/tools/meta.ts"
+      description: "サービス・スキーマ・概要の入口。操作前に必ず呼ぶ。"
       input:
           includeClips:
               type: "boolean"
               required: false
               default: true
-              note: "false で各トラックの arrangementClips 明細を省略（arrangementClipCount は残す）。"
+              note: "overview のトラックにアレンジメントクリップ明細を含める。"
           trackOffset:
               type: "number"
               required: false
@@ -770,148 +780,121 @@ mcp_tools:
               type: "number"
               required: false
               constraints: ["integer", "positive"]
-              note: "返すトラック最大数。既定は全件。"
       output:
           content:
               type: "TextContent[]"
               text_json_shape:
-                  identity: "SetIdentity { storageDirectory: string|null, songHandle: string, sdkNote: string }"
-                  structureDigest: "string（構造フィンガープリント djb2 8 桁 hex）"
-                  tempo: "number"
-                  scale:
-                      name: "string"
-                      mode: "boolean"
-                      rootNote: "number"
-                  trackCount: "number"
-                  returnTrackCount: "number"
-                  sceneCount: "number"
-                  cuePointCount: "number"
-                  arrangementEndTime: "number"
-                  trackOffset: "number"
-                  tracksShown: "number"
-                  includeClips: "boolean"
-                  cuePoints:
-                      type: "array"
-                      item:
-                          index: "number"
-                          name: "string"
-                          time: "number"
-                  tracks:
-                      type: "array"
-                      item:
-                          index: "number"
-                          name: "string"
-                          kind: "midi | audio | other"
-                          mute: "boolean"
-                          solo: "boolean"
-                          arm: "boolean"
-                          arrangementClipCount: "number"
-                          arrangementClips:
-                              type: "array"
-                              item:
-                                  index: "number"
-                                  _label: "\"MidiClip\" | \"AudioClip\" | \"Clip\""
-                                  name: "string"
-                                  startTime: "number"
-                                  endTime: "number"
-                                  duration: "number"
+                  service: "{ name, version }"
+                  schema: "LomSchema"
+                  query_contract: "QueryContract（読み書き文法）"
+                  examples: "string[]"
+                  virtual_labels:
+                      WriteEvent: "undo ログ照会クエリ"
+                      RenderJob: "render ジョブ照会クエリ"
+                  overview: "tempo / scale / track 概要 / cuePoints / structureDigest / identity"
 
-    - name: "query"
-      source: "apps/extension/src/tools/query.ts"
-      note: "LIMIT 省略時は DEFAULT_ROW_LIMIT(=500) で切り詰め、truncated:true と絞り込み hint を返す。LIMIT 明示時も MAX_ROW_LIMIT(=2000) の絶対上限でクランプし、truncated:true と hint を返す。"
-      decision_98: "明示 LIMIT に絶対上限を適用する（#98 で採用）。根拠: 行数上限の目的は MCP クライアントのコンテキスト保護であり、保護対象であるクライアント自身の LIMIT 指定（例: LIMIT 100000）で迂回できるのは目的に反する。絶対上限は既定の 4 倍（2000 行）とし、意図的な大量読み出し（ページング前提の一括取得）は SKIP + LIMIT の複数回呼び出しで代替できる。2000 行以下の既存 LIMIT 付きクエリの挙動は不変（#60 受け入れ条件との両立）。"
+    - name: "do"
+      source: "apps/extension/src/tools/do.ts"
+      description: "Cypher サブセットで Live Set を読み書きする統合ツール。"
+      note: |
+          read: MATCH ... RETURN（LIMIT 省略時 500 行 truncate、明示 LIMIT は 2000 絶対上限）。
+          write SET: MATCH ... SET n.prop = value（ラベル別書き込み可能プロパティは WRITABLE_BY_LABEL）。
+          write CREATE: CREATE (t:MidiTrack|AudioTrack {name?}) / CREATE (s:Scene {index?, name?}) / CREATE (c:CuePoint {time, name?}) / MATCH ... CREATE (a)-[:REL]->(n:Label {...})。
+          write DELETE: MATCH ... [DETACH] DELETE n。
+          write COPY: MATCH ... COPY n（Track / Scene / Device）。
+          preview:true でドライラン。undoable partial/none は confirm:true 必須。
+          応答: status ok|no_match|preview|confirm_required。書き込み ok は writeId + undoable + changed|created|deleted|copied（差分のみ）。
+          WRITABLE_BY_LABEL: Song[tempo]; Track/MidiTrack/AudioTrack/ReturnTrack/MainTrack[name,arm,mute,solo]; Clip[name,color,muted,looping,startTime,duration,startMarker,endMarker]; MidiClip[+notes]; AudioClip[+warping,warpMode]; Scene[name]; CuePoint[name]; Parameter[value]; Simpler[sampleFile]; Note[pitch,startTime,duration,velocity,muted,probability,releaseVelocity,velocityDeviation]。
+          CREATE 対応: MidiTrack/AudioTrack; Scene; CuePoint; MATCH (t:Track) CREATE Device; MATCH (s:ClipSlot) CREATE MidiClip{length}|AudioClip{filePath}; MATCH (t:Track) CREATE arrangement MidiClip|AudioClip; MATCH (c:MidiClip) CREATE Note。
       input:
-          cypher:
+          statement:
               type: "string"
               required: true
               min_length: 1
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  count: "number"
-                  rows: "Row[]"
-                  truncated: "boolean"
-                  hint:
-                      optional: true
-                      type: "string"
-
-    - name: "get_write_history"
-      source: "apps/extension/src/tools/history.ts"
-      note: "withWriteHistory facade が status:ok の書き込みと batch の適用段階失敗（部分適用あり）を storageDirectory/history/write-history.jsonl へ JSONL 記録。result 要約は snapshotId / undoSnapshotId / snapshots・生成物識別（clip / track / device 等の index・name・kind）・batch ステップ内訳（tools 列）を保持。ホスト再起動をまたいで参照可。上限超過は末尾 MAX_HISTORY_ENTRIES(1000) へローテーション。履歴ファイルの ENOENT のみ空応答で、他の fs 障害はエラー。"
-      input:
-          limit:
-              type: "number"
-              required: false
-              default: 50
-              constraints: ["integer", "positive", "<= 500"]
-          since:
-              type: "string"
-              required: false
-              note: "ISO 時刻。以降（含む）に絞る。"
-          until:
-              type: "string"
-              required: false
-              note: "ISO 時刻。以前（含む）に絞る。"
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  count: "number"
-                  total: "number"
-                  truncated: "boolean"
-                  entries: "HistoryEntry[] { at: string, tool: string, input: object, result: object }（新しい順）"
-
-    - name: "batch"
-      source: "apps/extension/src/tools/batch.ts"
-      note: "set_* / write_notes ステップを 1 回で実行し undo 履歴上 1 ステップにまとめる。入力検証は単体ツールと同一の zod スキーマ（SET_TOOL_SET_SCHEMAS / noteSchema / planNoteWrite）。解決・検証段階の失敗では何も適用しない。適用段階の失敗では SDK トランザクションがロールバックしないため適用済みステップが残り、応答で識別し書き込み履歴にも記録する。同一クリップへの複数 write_notes ステップは適用時に逐次再解決され先行結果を保持する。SDK のトランザクションコールバックが同期必須のため、後続ステップは同一 batch 内の先行ステップ生成物を参照不可、構造操作は対象外。"
-      input:
-          steps:
-              type: "Step[]（discriminated union on tool）"
-              required: true
-              note: "set_song{set} / set_track|set_clip|set_scene|set_cue_point|set_device_parameter{select,set} / write_notes{select,notes,mode,range?,allowOutOfRange?}。set の per-property 検証と write_notes の検証は単体ツールと同一。"
+              note: "実行する Cypher 文（読み取りまたは書き込み）"
           preview:
               type: "boolean"
               required: false
+              note: "書き込みのドライラン"
           confirm:
               type: "boolean"
               required: false
-              note: "totalTargets > 20 で必須。"
+              note: "undoable partial/none の書き込み確定"
       output:
           content:
               type: "TextContent[]"
               text_json_shape:
-                  status: "\"preview\" | \"confirm_required\" | \"failed\" | \"ok\""
-                  phase: "\"resolve\" | \"apply\"（failed のみ。resolve=未適用、apply=部分適用の可能性）"
-                  snapshots: "{index,tool,snapshotId}[]（ok / failed(apply)。各ステップの適用前スナップショット）"
-                  stepCount: "number（preview）"
-                  appliedSteps: "number（ok）| []（failed/resolve）| {index,tool}[]（failed/apply。適用済みで Set に残る）"
-                  failedSteps: "{index,tool,reason}[]（failed/apply）"
-                  unappliedSteps: "{index,tool}[]（failed/apply。同期失敗以降の未開始ステップ）"
-                  totalTargets: "number"
-                  failedStep: "number（failed/resolve）"
-                  steps: "step summary[]"
+                  read_ok:
+                      status: "\"ok\""
+                      count: "number"
+                      rows: "Row[]"
+                      truncated: "boolean"
+                      hint: "string | undefined"
+                  write_no_match:
+                      status: "\"no_match\""
+                      matched: "0"
+                      hint: "string"
+                  write_preview:
+                      status: "\"preview\""
+                      matched: "number"
+                      plan: "object"
+                  write_confirm_required:
+                      status: "\"confirm_required\""
+                      undoable: "\"partial\" | \"none\""
+                      undoableReason: "string | undefined"
+                      plan: "object"
+                  write_ok:
+                      status: "\"ok\""
+                      writeId: "string"
+                      undoable: "\"full\" | \"partial\" | \"none\""
+                      undoableReason: "string | undefined"
+                      changed: "ChangedEntry[] | undefined"
+                      created: "object[] | undefined"
+                      deleted: "object[] | undefined"
+                      copied: "object[] | undefined"
 
-    - name: "snapshot_tools"
-      source: "apps/extension/src/tools/snapshots.ts"
-      note: "set_* / write_notes / transform_notes は適用直前に旧値を storageDirectory/snapshots/<id>.json へスナップショットし、応答に snapshotId を返す。batch は各ステップの適用直前に取得し、応答の snapshots[{index,tool,snapshotId}] で返す（同一対象への多段ステップでは先頭ステップの snapshotId が batch 実行前の状態）。保持は最新 MAX_SNAPSHOTS(100) 件でローテーション。SDK に undo API が無いための代替。"
-      tools:
-          restore_snapshot:
-              input: "snapshotId: string"
-              output: "status:ok + restored / matchedNow / snapshotTargets / missingFromSet / unmatchedNow / undoSnapshotId / note?（部分復元時）"
-              note: "select を再解決し、対象を identity（Handle.id、schemaVersion 1.1 の targetIdentities）で照合して旧プロパティ値 / 旧 notes を書き戻す。requiredLabel を復元時にも検証。identity 不可の環境では件数一致時のみ index 照合（不一致は拒否＝順ズレ適用防止）。対象が全て消えた場合・破損ファイル・schemaVersion 不一致は hint 付きエラー。復元前の現在値を自動スナップショット（tool:restore_snapshot）し undoSnapshotId で返す。構造操作・非可逆属性は対象外。"
-          list_snapshots:
-              input: "limit?: number(<=100, 既定 50)"
-              output: "count / total / truncated / snapshots[{ id, at, tool, kind, select }]"
+    - name: "undo"
+      source: "apps/extension/src/tools/undo.ts"
+      description: "do 書き込みの逆操作を LIFO で適用する。undo 自体は新しい undo エントリを作らない。"
+      note: "undo ログは storageDirectory/undo/undo-log.jsonl（JSONL、MAX_UNDO_ENTRIES=200）。inverse: set_properties / notes_replace / delete_created / recreate（RecreateBlueprint）。照会は do read MATCH (e:WriteEvent) RETURN e。"
+      input:
+          steps:
+              type: "number"
+              required: false
+              default: 1
+              constraints: ["integer", "positive"]
+              note: "戻す件数（LIFO）"
+          writeId:
+              type: "string"
+              required: false
+              note: "特定 writeId のみ戻す"
+      output:
+          content:
+              type: "TextContent[]"
+              text_json_shape:
+                  no_match:
+                      status: "\"no_match\""
+                      hint: "string"
+                  ok:
+                      status: "\"ok\""
+                      undone:
+                          type: "array"
+                          item:
+                              writeId: "string"
+                              kind: "\"set\" | \"create\" | \"delete\" | \"copy\""
+                              restored: "number"
+                              reverted: "object[]"
+                              note: "string | undefined"
 
-    - name: "render_audio"
-      source: "apps/extension/src/tools/audio.ts"
-      note: "既定は同期で filePath を返す。background:true で jobId を即時返し、get_render_job で照会する（長尺のクライアントタイムアウト回避）。ジョブは module singleton の Map に MAX_RENDER_JOBS(50) 件保持。保持数超過の evict は done / error のみ（running は照会可能性を保つため保持）。running が上限を占有している場合、新規 background 開始は hint 付き BadRequestError で拒否する。"
+    - name: "render"
+      source: "apps/extension/src/tools/render.ts"
+      description: "AudioTrack の指定 beat 範囲を Pre-FX オーディオとしてレンダリングする。"
+      note: "background:true で非同期ジョブ（RenderJob 仮想ラベルで照会、MAX_RENDER_JOBS=50）。同期は filePath を即時返す。"
       input:
           select:
               type: "string"
               required: true
-              contract: "AudioTrack を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
+              contract: "AudioTrack を単一ノード変数で RETURN する MATCH"
           startTime:
               type: "number"
               required: true
@@ -923,1105 +906,287 @@ mcp_tools:
           background:
               type: "boolean"
               required: false
-              note: "true で { status:started, jobId } を即時返す。"
+              note: "true で { status:started, jobId } を即時返す"
       output:
           content:
               type: "TextContent[]"
               text_json_shape:
-                  status: "\"ok\" | \"started\""
-                  filePath: "string（ok）"
-                  jobId: "string（started）"
-                  startTime: "number"
-                  endTime: "number"
-                  duration: "number"
-                  track:
-                      index: "number"
-                      name: "string"
-                      kind: "\"audio\""
-
-    - name: "get_render_job"
-      source: "apps/extension/src/tools/audio.ts"
-      input:
-          jobId:
-              type: "string"
-              required: true
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  jobId: "string"
-                  status: "\"running\" | \"done\" | \"error\""
-                  filePath: "string（done）"
-                  error: "string（error）"
-                  track: "{ index, name, kind }"
-                  startTime: "number"
-                  endTime: "number"
-                  duration: "number"
-
-    - name: "search_presets"
-      source: "apps/extension/src/tools/presets.ts"
-      input:
-          roots:
-              type: "string[]"
-              required: true
-              constraints: ["min length 1", "absolute paths after ~ expansion"]
-          extensions:
-              type: "string[]"
-              required: false
-              default: ".adv/.adg/.alc/.als/.aupreset/.fxb/.fxp/.nmsv/.serumpreset/.vstpreset"
-          nameContains:
-              type: "string"
-              required: false
-          limit:
-              type: "number"
-              required: false
-              default: 200
-              constraints: ["integer", "1 <= value <= 2000"]
-          maxDepth:
-              type: "number"
-              required: false
-              default: 8
-              constraints: ["integer", "0 <= value <= 32"]
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"ok\""
-                  count: "number"
-                  limit: "number"
-                  limitReached: "boolean"
-                  presets:
-                      type: "array"
-                      item:
-                          name: "string"
-                          path: "string"
-                          type: "string"
-                          ext: "string"
-                          tags: "string[] | undefined"
-                  roots:
-                      type: "array"
-                      item:
-                          root: "string"
-                          scannedFiles: "number"
-                          matchedFiles: "number"
-                          error: "string | undefined"
-                  note: "string"
-
-    - name: "create_arrangement_clip"
-      source: "apps/extension/src/tools/arrangement.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "MidiTrack または AudioTrack を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          startTime:
-              type: "number"
-              required: true
-              constraints: ["value >= 0"]
-          duration:
-              type: "number"
-              required: true
-              constraints: ["positive"]
-          name:
-              type: "string"
-              required: false
-          audioFilePath:
-              type: "string"
-              required: false
-              note: "AudioTrack を選択した場合は必須。"
-          isWarped:
-              type: "boolean"
-              required: false
-          loopSettings:
-              type: "ClipLoopSettings"
-              required: false
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  track:
-                      index: "number"
-                      name: "string"
-                      kind: "\"midi\" | \"audio\""
-                  startTime:
-                      optional: true
-                      type: "number"
-                  duration:
-                      optional: true
-                      type: "number"
-                  audioFilePath:
-                      optional: true
-                      type: "string"
-                  clip:
-                      optional: true
-                      shape:
-                          _label: "\"MidiClip\" | \"AudioClip\" | \"Clip\""
-                          index: "number | null"
-                          name: "string"
-                          startTime: "number"
-                          endTime: "number"
-                          duration: "number"
-
-    - name: "delete_arrangement_clip"
-      source: "apps/extension/src/tools/arrangement.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "アレンジメント Clip を単一ノード変数で RETURN する Cypher。Session Clip は不可。"
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-              note: "destructive のため必須。無しは confirm_required 応答。"
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  track:
-                      index: "number"
-                      name: "string"
-                  clip:
-                      _label: "\"MidiClip\" | \"AudioClip\" | \"Clip\""
-                      index: "number | null"
-                      name: "string"
+                  sync_ok:
+                      status: "\"ok\""
+                      filePath: "string"
                       startTime: "number"
                       endTime: "number"
                       duration: "number"
-
-    - name: "move_clip"
-      source: "apps/extension/src/tools/arrangement.ts"
-      note: "SDK に移動 API が無いため、状態退避→削除→再作成→再適用で実現する（失敗時は元位置へ復元）。"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "アレンジメント Clip を単一ノード変数で RETURN する Cypher。Session Clip は不可。"
-          startTime:
-              type: "number"
-              required: true
-              constraints: ["value >= 0"]
-          overwrite:
-              type: "boolean"
-              required: false
-              note: "移動先が他クリップと重なる場合に true で範囲を空ける。"
-          confirm:
-              type: "boolean"
-              required: false
-              note: "再現不能属性の喪失または他クリップ消去を伴う場合に必須。"
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"confirm_required\" | \"noop\" | \"ok\""
-                  movedTo:
-                      optional: true
-                      shape:
-                          startTime: "number"
-                          endTime: "number"
-                  droppedAttributes: "string[]"
-                  clearedClips: "number"
-                  clip:
-                      _label: "\"MidiClip\" | \"AudioClip\" | \"Clip\""
-                      index: "number | null"
-                      name: "string"
+                      track: "{ index, name, kind:\"audio\" }"
+                      hint: "Poll with do: MATCH (j:RenderJob {id:\"...\"}) RETURN j"
+                  background_started:
+                      status: "\"started\""
+                      jobId: "string"
+                      track: "{ index, name, kind:\"audio\" }"
                       startTime: "number"
                       endTime: "number"
                       duration: "number"
+                      hint: "string"
 
-    - name: "trim_clip"
-      source: "apps/extension/src/tools/arrangement.ts"
-      note: "SDK にトリム API が無いため、状態退避→削除→再作成→再適用で実現する（失敗時は元状態へ復元）。startTime は維持する。MIDI は marker を設定できないため、ノートを新窓へフィルタ／シフトして近似する。"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "アレンジメント Clip を単一ノード変数で RETURN する Cypher。Session Clip は不可。"
-          duration:
-              type: "number"
-              required: false
-              constraints: ["positive"]
-              note: "トリム後の長さ（拍）。duration / startMarker / endMarker のいずれか 1 つ以上が必須。"
-          startMarker:
-              type: "number"
-              required: false
-              constraints: ["value >= 0"]
-              note: "Audio の内容窓開始（拍）。MIDI ではノートの窓開始として解釈する。"
-          endMarker:
-              type: "number"
-              required: false
-              constraints: ["positive"]
-              note: "Audio の内容窓終了（拍）。MIDI ではノートの窓終了として解釈する。"
-          overwrite:
-              type: "boolean"
-              required: false
-              note: "新しい範囲が他クリップと重なる場合に true で範囲を空ける。"
-          confirm:
-              type: "boolean"
-              required: false
-              note: "再現不能属性の喪失・窓外ノート削除・他クリップ消去を伴う場合に必須。"
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"confirm_required\" | \"noop\" | \"ok\""
-                  trimmedTo:
-                      optional: true
-                      shape:
-                          startTime: "number"
-                          endTime: "number"
-                          duration: "number"
-                          startMarker: "number | undefined"
-                          endMarker: "number | undefined"
-                  droppedNotes: "number"
-                  droppedAttributes: "string[]"
-                  clearedClips: "number"
-                  clip:
-                      _label: "\"MidiClip\" | \"AudioClip\" | \"Clip\""
-                      index: "number | null"
-                      name: "string"
-                      startTime: "number"
-                      endTime: "number"
-                      duration: "number"
-
-    - name: "create_cue_point"
-      source: "apps/extension/src/tools/arrangement.ts"
-      input:
-          time:
-              type: "number"
-              required: true
-              constraints: ["value >= 0"]
-          name:
-              type: "string"
-              required: false
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  time:
-                      optional: true
-                      type: "number"
-                  name:
-                      optional: true
-                      type: "string"
-                  cuePoint:
-                      optional: true
-                      shape:
-                          _label: "\"CuePoint\""
-                          index: "number | null"
-                          name: "string"
-                          time: "number"
-
-    - name: "delete_cue_point"
-      source: "apps/extension/src/tools/arrangement.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "CuePoint を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-              note: "destructive のため必須。無しは confirm_required 応答。"
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  cuePoint:
-                      _label: "\"CuePoint\""
-                      index: "number | null"
-                      name: "string"
-                      time: "number"
-
-    - name: "create_clip"
-      source: "apps/extension/src/tools/create.ts"
-      note: "MidiTrack の ClipSlot は length で空 MidiClip、AudioTrack の ClipSlot は audioFilePath で AudioClip を生成する。"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "空の ClipSlot を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          length:
-              type: "number"
-              required: false
-              constraints: ["positive"]
-              note: "MidiTrack の ClipSlot で必須。AudioTrack の ClipSlot に渡すと明示エラー（クリップ長はオーディオファイルに従う）。"
-          audioFilePath:
-              type: "string"
-              required: false
-              note: "AudioTrack の ClipSlot で必須。MidiTrack の ClipSlot に渡すと明示エラー。load_sample と同等の事前検証（絶対パス・対応形式・存在）を行う。"
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  track:
-                      index: "number"
-                      name: "string"
-                      kind: "\"midi\""
-                  clipSlot: "Record<string, unknown>"
-                  length: "number"
-                  clip:
-                      optional: true
-                      shape:
-                          _label: "\"MidiClip\""
-                          name: "string"
-                          duration: "number"
-                          startTime: "number"
-                          endTime: "number"
-                          noteCount: "number"
-
-    - name: "load_sample"
-      source: "apps/extension/src/tools/samples.ts"
-      note: "select で選んだ Simpler に importIntoProject→replaceSample でオーディオを読み込む。Drum Rack パッド内 Simpler も対象。"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Simpler を単一ノード変数で RETURN する Cypher。"
-          audioFilePath:
-              type: "string"
-              required: true
-              constraints: ["絶対パス", "対応拡張子(.wav/.aif/.aiff/.mp3/.flac/.ogg/.m4a/.aac)"]
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  device: "{ name: string }"
-                  audioFilePath: "string"
-                  importedPath:
-                      optional: true
-                      type: "string"
-
-    - name: "structure_tools"
-      source: "apps/extension/src/tools/structure.ts"
-      note: "SDK の構造操作をツール化。破壊操作（delete_*）は preview で対象確認、confirm:true で実行（guardDestructive）。"
-      tools:
-          create_track:
-              input: "kind: \"midi\"|\"audio\", name?: string, preview?: boolean"
-              sdk: "Song.createMidiTrack() / Song.createAudioTrack()（index 引数なし）"
-              note: "SDK は挿入位置を指定できず、最後に選択されたトラックの直後（未選択なら末尾）に生成。生成後 Track.name で命名。"
-              output: "status:ok + track{ index, name, kind }"
-          create_scene:
-              input: "index?: number>=0, name?: string, preview?: boolean"
-              sdk: "Song.createScene(index)"
-          delete_scene:
-              input: "select(Scene), preview?, confirm?"
-              sdk: "Song.deleteScene(scene)"
-          duplicate_scene:
-              input: "select(Scene), preview?"
-              sdk: "Song.duplicateScene(scene)"
-          delete_track:
-              input: "select(regular Track), preview?, confirm?"
-              sdk: "Song.deleteTrack(track)"
-              note: "return / main は不可。"
-          duplicate_track:
-              input: "select(regular Track), preview?"
-              sdk: "Song.duplicateTrack(track)"
-          delete_device:
-              input: "select(Device), preview?, confirm?"
-              sdk: "Track.deleteDevice / Chain.deleteDevice（device.parent）"
-          duplicate_device:
-              input: "select(Device), preview?"
-              sdk: "Track.duplicateDevice / Chain.duplicateDevice"
-              note: "ok 応答の device に複製後の実 index を含む（同名 2 件でも index で一意に select 可能）。"
-          delete_session_clip:
-              input: "select(ClipSlot with clip), preview?, confirm?"
-              sdk: "ClipSlot.deleteClip()"
-
-    - name: "verify_device_catalog"
-      source: "apps/extension/src/tools/catalog.ts"
-      note: "内蔵デバイスカタログ全項目を一時 MidiTrack へ挿入試行し可否一覧を返す。confirm:true 必須（無しは confirm_required と実行計画）。各デバイス即削除・一時トラック最後に削除で Set 無残留（undo 履歴にはデバイス数の約 2 倍の記録。挿入結果に依存する削除を同期開始できないため SDK 制約で 1 undo ステップに束ねられない）。掃除失敗は cleanup:failed / cleanupError / warning で申告。実行は書き込み履歴（WRITE_HISTORY_TOOLS）に記録。実行は Live 実機が必要。結果記録先は llm/device-catalog.md。"
-      input:
-          preview:
-              type: "boolean"
-              required: false
-              note: "実行せず実行計画（デバイス数・undo 見積り）を返す。"
-          confirm:
-              type: "boolean"
-              required: false
-              note: "必須。無しは confirm_required 応答。"
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"confirm_required\" | \"ok\""
-                  total: "number"
-                  insertable: "number"
-                  failed: "number"
-                  failedNames: "string[]"
-                  results: "{ name: string, insertable: boolean, error?: string }[]"
-                  cleanup: "\"ok\" | \"failed\"（ok 応答のみ）"
-                  cleanupError: "string（cleanup:failed のみ）"
-                  warning: "string（cleanup:failed のみ。一時トラック残留の警告）"
-
-    - name: "insert_device"
-      source: "apps/extension/src/tools/devices.ts"
-      note: "Track.insertDevice で内蔵 Live デバイスを挿入する。内蔵デバイスのデフォルトプリセットのみ対応し、サードパーティプラグインや .adv/.adg などのプリセットファイルは挿入できない。SDK にデバイス列挙 API が無いため、失敗時に内蔵デバイス名カタログを validDeviceNames として返す。"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Track を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          deviceName:
-              type: "string"
-              required: true
-              note: "内蔵 Live デバイスの表示名（例: Operator, Reverb, Auto Filter）。"
-          index:
-              type: "number"
-              required: false
-              constraints: ["integer", "value >= 0", "value <= track.devices.length"]
-              note: "挿入位置（0 始まり）。省略時はデバイスチェーンの末尾に追加する。"
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  track: "Record<string, unknown>"
-                  deviceName: "string"
-                  index: "number"
-                  device:
-                      optional: true
-                      shape:
-                          _label: "\"Device\" | \"RackDevice\" | \"DrumRack\" | \"Simpler\""
-                          name: "string"
-                          index: "number"
-                          parameterCount: "number"
-
-    - name: "set_song"
-      source: "apps/extension/src/tools/write.ts"
-      input:
-          set:
-              tempo:
-                  type: "number"
-                  required: false
-                  constraints: ["positive"]
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-      selection:
-          fixed_select: "MATCH (s:Song) RETURN s"
-
-    - name: "set_track"
-      source: "apps/extension/src/tools/write.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Track を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          set:
-              name:
-                  type: "string"
-                  required: false
-              arm:
-                  type: "boolean"
-                  required: false
-              mute:
-                  type: "boolean"
-                  required: false
-              solo:
-                  type: "boolean"
-                  required: false
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-
-    - name: "set_clip"
-      source: "apps/extension/src/tools/write.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Clip を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          set:
-              name:
-                  type: "string"
-                  required: false
-              color:
-                  type: "number"
-                  required: false
-              muted:
-                  type: "boolean"
-                  required: false
-              looping:
-                  type: "boolean"
-                  required: false
-              warping:
-                  type: "boolean"
-                  required: false
-              warpMode:
-                  type: "warp_mode"
-                  required: false
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-
-    - name: "set_scene"
-      source: "apps/extension/src/tools/write.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Scene を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          set:
-              name:
-                  type: "string"
-                  required: false
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-
-    - name: "set_cue_point"
-      source: "apps/extension/src/tools/write.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "CuePoint を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          set:
-              name:
-                  type: "string"
-                  required: false
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-
-    - name: "set_device_parameter"
-      source: "apps/extension/src/tools/write.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Parameter を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          set:
-              value:
-                  type: "number"
-                  required: true
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-
-    - name: "save_device_state"
-      source: "apps/extension/src/tools/presets.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Device を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          stateName:
-              type: "string"
-              required: true
-          overwrite:
-              type: "boolean"
-              required: false
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  stateName: "string"
-                  device:
-                      name: "string"
-                  parameterCount: "number"
-                  filePath: "string"
-
-    - name: "apply_device_state"
-      source: "apps/extension/src/tools/presets.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "Device を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          stateName:
-              type: "string"
-              required: true
-          preview:
-              type: "boolean"
-              required: false
-          confirm:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"confirm_required\" | \"ok\""
-                  stateName: "string"
-                  sourceDevice:
-                      optional: true
-                      type: "string"
-                  targetDevice:
-                      optional: true
-                      type: "string"
-                  matched:
-                      optional: true
-                      type: "number"
-                  applied:
-                      optional: true
-                      type: "number"
-                  changes:
-                      optional: true
-                      type: "DeviceParameterChange[]"
-                  hint:
-                      optional: true
-                      type: "string"
-
-    - name: "transform_notes"
-      source: "apps/extension/src/tools/transform-notes.ts"
-      note: "select で選んだ MidiClip の notes を決定的変換する。クリップ相対座標。startTime [0,クリップ長) 外・pitch 0..127 外はどちらも onOutOfRange に従う（error=変換全体を拒否が既定。write_notes の境界検証と同じ方針）。quantize は末尾を超えないよう範囲内の直前グリッドへ丸め、ノートを削除しない。"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "MidiClip を単一ノード変数で RETURN する Cypher。"
-          transform:
-              type: "TransformSpec"
-              required: true
-              note: "transpose{semitones} / time_shift{delta} / velocity{scale?,offset?} / quantize{grid,strength?} / duplicate{offset,count?}。"
-          filter:
-              type: "NoteFilter"
-              required: false
-              note: "timeStart / timeEnd / pitchMin / pitchMax。対象ノートの絞り込み。"
-          onOutOfRange:
-              type: "\"drop\" | \"error\""
-              required: false
-              default: "error"
-              note: "error=範囲外ノートが出る変換を拒否（既定）/ drop=範囲外ノートを削除（明示 opt-in）。"
-          preview:
-              type: "boolean"
-              required: false
-      output:
-          content:
-              type: "TextContent[]"
-              text_json_shape:
-                  status: "\"preview\" | \"ok\""
-                  transform: "string"
-                  clipLength: "number"
-                  affected: "number"
-                  droppedPitch: "number"
-                  droppedTime: "number"
-                  before: "{ noteCount, pitchRange, timeRange }"
-                  after: "{ noteCount, pitchRange, timeRange }"
-                  snapshotId: "string（ok のみ。適用前 notes のスナップショット。restore_snapshot で巻き戻す）"
-
-    - name: "write_notes"
-      source: "apps/extension/src/tools/notes.ts"
-      input:
-          select:
-              type: "string"
-              required: true
-              contract: "MidiClip を単一ノード変数で RETURN する Cypher。プロパティ射影・複数変数は不可。"
-          notes:
-              type: "NoteInput[]"
-              required: false
-              default: "[]"
-              note: "replace / merge の対象ノート（1 件以上必須。空・省略は hint 付き BadRequestError で全消去を防ぐ）。clear_range では無視する。startTime + duration がクリップ末尾を超えるノートは受理し、応答の tailOverflow に件数を返す。"
-          mode:
-              type: "\"replace\" | \"merge\" | \"clear_range\""
-              required: false
-              default: "replace"
-              note: "replace=全置換 / merge=既存保持し追加（同一 pitch+startTime は入力で置換）/ clear_range=range のノート削除。全削除は clear_range を使う。"
-          range:
-              type: "{ start: number; end: number }"
-              required: false
-              note: "clear_range で削除するクリップ相対拍範囲 [start, end)。clear_range では必須。end <= start は hint 付きエラー。範囲全体がクリップ相対範囲 [0, クリップ長) の外にある場合は座標系の説明付きで拒否。"
-          allowOutOfRange:
-              type: "boolean"
-              required: false
-              default: false
-              note: "クリップ相対拍 [0, クリップ長) を超える startTime を許容する。既定は座標系取り違えを検出して拒否。"
-          preview:
-              type: "boolean"
-              required: false
+    - name: "deprecated_tools_v3"
+      note: "v3.0.0 で削除。後継は llm/version/3.0.0.md の対応表を参照。"
+      removed:
+          - "schema / get_overview → meta"
+          - "query → do read"
+          - "set_* / write_notes / transform_notes / load_sample / create_* / delete_* / duplicate_* / move_clip / trim_clip / insert_device → do write"
+          - "render_audio / get_render_job → render / do read RenderJob"
+          - "get_write_history / list_snapshots / restore_snapshot → do read WriteEvent / undo"
+          - "batch → 複数ノード MATCH SET で代替"
+          - "search_presets / save_device_state / apply_device_state / verify_device_catalog → 廃止"
 
 tool_support_models:
-    - name: "RenderAudioParams"
-      source: "apps/extension/src/tools/audio.ts"
+    - name: "UndoableLevel"
+      source: "apps/extension/src/tools/common.ts"
+      type: "\"full\" | \"partial\" | \"none\""
+
+    - name: "WriteContext"
+      source: "apps/extension/src/tools/do/write-support.ts"
       fields:
-          - name: "select"
+          - name: "writeId"
             type: "string"
+            required: true
+          - name: "statement"
+            type: "string"
+            required: true
+          - name: "kind"
+            type: "\"set\" | \"create\" | \"delete\" | \"copy\""
+            required: true
+          - name: "summary"
+            type: "string"
+            required: true
+          - name: "undoable"
+            type: "UndoableLevel"
+            required: true
+          - name: "undoableReason"
+            type: "string"
+            required: false
+          - name: "inverse"
+            type: "InverseOperation[]"
+            required: true
+
+    - name: "InverseSetTarget"
+      source: "apps/extension/src/undo/types.ts"
+      fields:
+          - name: "identity"
+            type: "string | null"
+            required: true
+          - name: "label"
+            type: "string"
+            required: true
+          - name: "properties"
+            type: "Record<string, ScalarValue>"
+            required: true
+
+    - name: "InverseSetProperties"
+      source: "apps/extension/src/undo/types.ts"
+      fields:
+          - name: "kind"
+            type: "\"set_properties\""
+            required: true
+          - name: "targets"
+            type: "InverseSetTarget[]"
+            required: true
+
+    - name: "InverseDeleteCreated"
+      source: "apps/extension/src/undo/types.ts"
+      fields:
+          - name: "kind"
+            type: "\"delete_created\""
+            required: true
+          - name: "items"
+            type: "{ identity: string, label: string }[]"
+            required: true
+
+    - name: "InverseNotesReplace"
+      source: "apps/extension/src/undo/types.ts"
+      fields:
+          - name: "kind"
+            type: "\"notes_replace\""
+            required: true
+          - name: "clipIdentity"
+            type: "string"
+            required: true
+          - name: "oldNotes"
+            type: "NoteDescription[]"
+            required: true
+
+    - name: "RecreateBlueprint"
+      source: "apps/extension/src/undo/types.ts"
+      note: "arrangement_midi_clip | arrangement_audio_clip | session_midi_clip | session_audio_clip | device | note | cue_point | scene"
+      kind: "discriminated_union"
+
+    - name: "InverseRecreate"
+      source: "apps/extension/src/undo/types.ts"
+      fields:
+          - name: "kind"
+            type: "\"recreate\""
+            required: true
+          - name: "blueprints"
+            type: "RecreateBlueprint[]"
+            required: true
+
+    - name: "InverseOperation"
+      source: "apps/extension/src/undo/types.ts"
+      type: "InverseSetProperties | InverseDeleteCreated | InverseRecreate | InverseNotesReplace"
+
+    - name: "UndoLogEntry"
+      source: "apps/extension/src/undo/types.ts"
+      fields:
+          - name: "writeId"
+            type: "string"
+            required: true
+          - name: "time"
+            type: "string"
+            required: true
+          - name: "statement"
+            type: "string"
+            required: true
+          - name: "kind"
+            type: "\"set\" | \"create\" | \"delete\" | \"copy\""
+            required: true
+          - name: "summary"
+            type: "string"
+            required: true
+          - name: "undoable"
+            type: "UndoableLevel"
+            required: true
+          - name: "undoableReason"
+            type: "string"
+            required: false
+          - name: "status"
+            type: "\"applied\" | \"undone\""
+            required: true
+          - name: "inverse"
+            type: "InverseOperation[]"
+            required: true
+
+    - name: "RenderJobRecord"
+      source: "apps/extension/src/render/jobs.ts"
+      fields:
+          - name: "id"
+            type: "string"
+            required: true
+          - name: "status"
+            type: "\"running\" | \"done\" | \"error\""
+            required: true
+          - name: "at"
+            type: "string"
+            required: true
+          - name: "track"
+            type: "{ index: number, name: string, kind: \"audio\" }"
             required: true
           - name: "startTime"
             type: "number"
             required: true
-            constraints: ["value >= 0"]
           - name: "endTime"
             type: "number"
             required: true
-            constraints: ["positive", "endTime > startTime"]
-    - name: "CreateClipParams"
-      source: "apps/extension/src/tools/create.ts"
-      fields:
-          - name: "select"
-            type: "string"
-            required: true
-          - name: "length"
-            type: "number"
-            required: true
-            constraints: ["positive"]
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "InsertDeviceParams"
-      source: "apps/extension/src/tools/devices.ts"
-      fields:
-          - name: "select"
-            type: "string"
-            required: true
-          - name: "deviceName"
-            type: "string"
-            required: true
-          - name: "index"
-            type: "number | undefined"
-            required: true
-            constraints: ["integer", "value >= 0", "value <= track.devices.length"]
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "ClipLoopSettings"
-      source: "@ableton-extensions/sdk"
-      fields:
-          - name: "looping"
-            type: "boolean"
-            required: true
-          - name: "startMarker"
-            type: "number"
-            required: true
-          - name: "endMarker"
-            type: "number"
-            required: true
-          - name: "loopStart"
-            type: "number"
-            required: true
-          - name: "loopEnd"
-            type: "number"
-            required: true
-    - name: "CreateArrangementClipParams"
-      source: "apps/extension/src/tools/arrangement.ts"
-      fields:
-          - name: "select"
-            type: "string"
-            required: true
-          - name: "startTime"
-            type: "number"
-            required: true
-            constraints: ["value >= 0"]
           - name: "duration"
             type: "number"
             required: true
-            constraints: ["positive"]
-          - name: "name"
-            type: "string | undefined"
-            required: true
-          - name: "audioFilePath"
-            type: "string | undefined"
-            required: true
-          - name: "isWarped"
-            type: "boolean | undefined"
-            required: true
-          - name: "loopSettings"
-            type: "ClipLoopSettings | undefined"
-            required: true
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "DeleteArrangementClipParams"
-      source: "apps/extension/src/tools/arrangement.ts"
-      fields:
-          - name: "select"
+          - name: "filePath"
             type: "string"
-            required: true
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "CreateCuePointParams"
-      source: "apps/extension/src/tools/arrangement.ts"
-      fields:
-          - name: "time"
-            type: "number"
-            required: true
-            constraints: ["value >= 0"]
-          - name: "name"
-            type: "string | undefined"
-            required: true
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "DeleteCuePointParams"
-      source: "apps/extension/src/tools/arrangement.ts"
-      fields:
-          - name: "select"
-            type: "string"
-            required: true
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "SearchPresetsParams"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "roots"
-            type: "string[]"
-            required: true
-          - name: "extensions"
-            type: "string[] | undefined"
-            required: true
-          - name: "nameContains"
-            type: "string | undefined"
-            required: true
-          - name: "limit"
-            type: "number | undefined"
-            required: true
-          - name: "maxDepth"
-            type: "number | undefined"
-            required: true
-    - name: "PresetSearchResult"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "name"
-            type: "string"
-            required: true
-          - name: "path"
-            type: "string"
-            required: true
-          - name: "type"
-            type: "string"
-            required: true
-          - name: "ext"
-            type: "string"
-            required: true
-          - name: "tags"
-            type: "string[]"
             required: false
-    - name: "RootSearchSummary"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "root"
-            type: "string"
-            required: true
-          - name: "scannedFiles"
-            type: "number"
-            required: true
-          - name: "matchedFiles"
-            type: "number"
-            required: true
           - name: "error"
             type: "string"
             required: false
-    - name: "DeviceParameterValueItemState"
-      source: "apps/extension/src/tools/presets.ts"
+
+    - name: "VirtualLabelSources"
+      source: "apps/extension/src/lom/create-adapter.ts"
+      note: "WriteEvent / RenderJob 仮想ノードの供給源"
+
+    - name: "DoParams"
+      source: "apps/extension/src/tools/do.ts"
       fields:
-          - name: "index"
-            type: "number"
-            required: true
-          - name: "name"
-            type: "string"
-            required: true
-          - name: "shortName"
-            type: "string"
-            required: true
-    - name: "DeviceParameterState"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "index"
-            type: "number"
-            required: true
-          - name: "name"
-            type: "string"
-            required: true
-          - name: "value"
-            type: "number"
-            required: true
-          - name: "min"
-            type: "number"
-            required: true
-          - name: "max"
-            type: "number"
-            required: true
-          - name: "defaultValue"
-            type: "number"
-            required: true
-          - name: "isQuantized"
-            type: "boolean"
-            required: true
-          - name: "valueItems"
-            type: "DeviceParameterValueItemState[]"
-            required: true
-          - name: "valueItem"
-            type: "DeviceParameterValueItemState | null"
-            required: true
-    - name: "DeviceStateFile"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "schemaVersion"
-            type: "\"1.0\""
-            required: true
-          - name: "kind"
-            type: "\"live_connector_device_state\""
-            required: true
-          - name: "stateName"
-            type: "string"
-            required: true
-          - name: "deviceName"
-            type: "string"
-            required: true
-          - name: "parameters"
-            type: "DeviceParameterState[]"
-            required: true
-    - name: "SaveDeviceStateParams"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "select"
-            type: "string"
-            required: true
-          - name: "stateName"
-            type: "string"
-            required: true
-          - name: "overwrite"
-            type: "boolean | undefined"
-            required: true
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-    - name: "ApplyDeviceStateParams"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "select"
-            type: "string"
-            required: true
-          - name: "stateName"
+          - name: "statement"
             type: "string"
             required: true
           - name: "preview"
             type: "boolean | undefined"
-            required: true
+            required: false
           - name: "confirm"
             type: "boolean | undefined"
-            required: true
-    - name: "DeviceParameterChange"
-      source: "apps/extension/src/tools/presets.ts"
-      fields:
-          - name: "name"
-            type: "string"
-            required: true
-          - name: "from"
-            type: "number"
-            required: true
-          - name: "to"
-            type: "number"
-            required: true
-          - name: "valueItem"
-            type: "DeviceParameterValueItemState | null"
-            required: true
-    - name: "SetParams"
-      source: "apps/extension/src/tools/write.ts"
+            required: false
+
+    - name: "RenderParams"
+      source: "apps/extension/src/tools/render.ts"
       fields:
           - name: "select"
             type: "string"
             required: true
-          - name: "set"
-            type: "Record<string, ScalarValue | undefined>"
-            required: true
-          - name: "preview"
-            type: "boolean | undefined"
-            required: true
-          - name: "confirm"
-            type: "boolean | undefined"
-            required: true
-    - name: "NoteInput"
-      source: "apps/extension/src/tools/notes.ts"
-      fields:
-          - name: "pitch"
-            type: "number"
-            required: true
-            constraints: ["integer", "0 <= value <= 127"]
           - name: "startTime"
             type: "number"
             required: true
-            constraints: ["value >= 0"]
-          - name: "duration"
+          - name: "endTime"
             type: "number"
             required: true
-            constraints: ["positive"]
-          - name: "velocity"
-            type: "number"
+          - name: "background"
+            type: "boolean | undefined"
             required: false
-            constraints: ["0 <= value <= 127"]
-          - name: "muted"
-            type: "boolean"
+
+    - name: "UndoParams"
+      source: "apps/extension/src/tools/undo.ts"
+      fields:
+          - name: "steps"
+            type: "number | undefined"
             required: false
-          - name: "probability"
-            type: "number"
-            required: false
-            constraints: ["0 <= value <= 1"]
-          - name: "releaseVelocity"
-            type: "number"
-            required: false
-            constraints: ["0 <= value <= 127"]
-          - name: "velocityDeviation"
-            type: "number"
+          - name: "writeId"
+            type: "string | undefined"
             required: false
 
 tool_result_shapes:
     package_extension:
         command: "pnpm package"
         source: "apps/extension/package.ts"
-        output_path: "apps/extension/dist/live-connector-2.17.17.ablx"
+        output_path: "apps/extension/dist/live-connector-3.0.0.ablx"
         archive_contents:
             - "manifest.json"
             - "dist/extension.js"
-    render_audio:
+    do_read:
+        statuses:
+            - status: "ok"
+              fields:
+                  count: "number"
+                  rows: "Row[]"
+                  truncated: "boolean"
+                  hint: "string | undefined"
+    do_write:
+        statuses:
+            - status: "no_match"
+              fields:
+                  matched: "0"
+                  hint: "string"
+            - status: "preview"
+              fields:
+                  matched: "number"
+                  plan: "object"
+            - status: "confirm_required"
+              fields:
+                  undoable: "UndoableLevel"
+                  undoableReason: "string | undefined"
+                  plan: "object"
+            - status: "ok"
+              fields:
+                  writeId: "string"
+                  undoable: "UndoableLevel"
+                  changed: "ChangedEntry[] | undefined"
+                  created: "object[] | undefined"
+                  deleted: "object[] | undefined"
+                  copied: "object[] | undefined"
+    undo:
+        statuses:
+            - status: "no_match"
+              fields:
+                  hint: "string"
+            - status: "ok"
+              fields:
+                  undone: "UndoResultEntry[]"
+    render:
         statuses:
             - status: "ok"
               fields:
@@ -2029,145 +1194,15 @@ tool_result_shapes:
                   startTime: "number"
                   endTime: "number"
                   duration: "number"
-                  track: "{ index: number, name: string, kind: \"audio\" }"
-    create_clip:
-        statuses:
-            - status: "preview"
+                  track: "{ index, name, kind: \"audio\" }"
+            - status: "started"
               fields:
-                  track: "{ index: number, name: string, kind: \"midi\" }"
-                  clipSlot: "Record<string, unknown>"
-                  length: "number"
-            - status: "ok"
-              fields:
-                  track: "{ index: number, name: string, kind: \"midi\" }"
-                  clipSlot: "Record<string, unknown>"
-                  length: "number"
-                  clip: "{ _label: \"MidiClip\", name: string, duration: number, startTime: number, endTime: number, noteCount: number }"
-    create_arrangement_clip:
-        statuses:
-            - status: "preview"
-              fields:
-                  track: "{ index: number, name: string, kind: \"midi\" | \"audio\" }"
+                  jobId: "string"
+                  track: "{ index, name, kind: \"audio\" }"
                   startTime: "number"
+                  endTime: "number"
                   duration: "number"
-                  audioFilePath: "string | undefined"
-            - status: "ok"
-              fields:
-                  track: "{ index: number, name: string, kind: \"midi\" | \"audio\" }"
-                  clip: "{ _label: \"MidiClip\" | \"AudioClip\" | \"Clip\", index: number | null, name: string, startTime: number, endTime: number, duration: number }"
-    delete_arrangement_clip:
-        statuses:
-            - status: "preview"
-              fields:
-                  track: "{ index: number, name: string }"
-                  clip: "{ _label: \"MidiClip\" | \"AudioClip\" | \"Clip\", index: number | null, name: string, startTime: number, endTime: number, duration: number }"
-            - status: "ok"
-              fields:
-                  track: "{ index: number, name: string }"
-                  clip: "{ _label: \"MidiClip\" | \"AudioClip\" | \"Clip\", index: number | null, name: string, startTime: number, endTime: number, duration: number }"
-    create_cue_point:
-        statuses:
-            - status: "preview"
-              fields:
-                  time: "number"
-                  name: "string | undefined"
-            - status: "ok"
-              fields:
-                  cuePoint: "{ _label: \"CuePoint\", index: number | null, name: string, time: number }"
-    delete_cue_point:
-        statuses:
-            - status: "preview"
-              fields:
-                  cuePoint: "{ _label: \"CuePoint\", index: number | null, name: string, time: number }"
-            - status: "ok"
-              fields:
-                  cuePoint: "{ _label: \"CuePoint\", index: number | null, name: string, time: number }"
-    search_presets:
-        statuses:
-            - status: "ok"
-              fields:
-                  count: "number"
-                  limit: "number"
-                  limitReached: "boolean"
-                  presets: "PresetSearchResult[]"
-                  roots: "RootSearchSummary[]"
-                  note: "string"
-    save_device_state:
-        statuses:
-            - status: "preview"
-              fields:
-                  stateName: "string"
-                  device: "{ name: string }"
-                  parameterCount: "number"
-                  filePath: "string"
-            - status: "ok"
-              fields:
-                  stateName: "string"
-                  device: "{ name: string }"
-                  parameterCount: "number"
-                  filePath: "string"
-    apply_device_state:
-        statuses:
-            - status: "preview"
-              fields:
-                  stateName: "string"
-                  sourceDevice: "string"
-                  targetDevice: "string"
-                  matched: "number"
-                  changes: "DeviceParameterChange[]"
-            - status: "confirm_required"
-              fields:
-                  stateName: "string"
-                  matched: "number"
                   hint: "string"
-            - status: "ok"
-              fields:
-                  stateName: "string"
-                  sourceDevice: "string"
-                  targetDevice: "string"
-                  applied: "number"
-    set_tools:
-        statuses:
-            - status: "no_match"
-              fields:
-                  matched: "0"
-            - status: "preview"
-              fields:
-                  matched: "number"
-                  set: "Record<string, ScalarValue>"
-                  targets: "Record<string, unknown>[]"
-            - status: "confirm_required"
-              fields:
-                  matched: "number"
-                  hint: "string"
-            - status: "ok"
-              fields:
-                  modified: "number"
-                  set: "Record<string, ScalarValue>"
-                  snapshotId: "string（restore_snapshot 用）"
-        confirm_threshold: 20
-    write_notes:
-        common_fields:
-            mode: "\"replace\" | \"merge\" | \"clear_range\""
-            clipLength: "number"
-            noteCount: "number"
-            outOfRange: "number"
-        mode_fields:
-            merge: "added: number, previous: number"
-            clear_range: "removed: number, range: { start, end }"
-        statuses:
-            - status: "preview"
-              fields:
-                  mode: "string"
-                  clipLength: "number"
-                  noteCount: "number"
-            - status: "ok"
-              fields:
-                  mode: "string"
-                  clipLength: "number"
-                  noteCount: "number"
-                  snapshotId: "string（restore_snapshot 用）"
-
 lom_graph:
     source: "packages/lom-schema/src/schema.ts"
     version: "1.0.0"
@@ -2294,7 +1329,7 @@ lom_graph:
           extends: "Chain"
           properties: []
         - label: "Note"
-          description: "MidiClip 内の MIDI ノート。読みは query、書きは write_notes で扱う。"
+          description: "MidiClip 内の MIDI ノート。読みは do read、書きは do SET notes または CREATE Note で扱う。"
           properties:
               - { name: "pitch", type: "number", access: "rw" }
               - { name: "startTime", type: "number", access: "rw" }
@@ -2310,6 +1345,24 @@ lom_graph:
               - { name: "index", type: "number", access: "r" }
               - { name: "name", type: "string", access: "rw" }
               - { name: "time", type: "number", access: "r" }
+        - label: "WriteEvent"
+          virtual: true
+          description: "do 書き込みの undo ログエントリ（読み取り専用）。create-adapter が供給。"
+          properties:
+              - { name: "id", type: "string", access: "r", description: "writeId" }
+              - { name: "time", type: "string", access: "r" }
+              - { name: "kind", type: "string", access: "r", description: "set | create | delete | copy" }
+              - { name: "statement", type: "string", access: "r" }
+              - { name: "undoable", type: "string", access: "r", description: "full | partial | none" }
+              - { name: "status", type: "string", access: "r", description: "applied | undone" }
+        - label: "RenderJob"
+          virtual: true
+          description: "render ツールの非同期ジョブ状態（読み取り専用）。render/jobs.ts が供給。"
+          properties:
+              - { name: "id", type: "string", access: "r" }
+              - { name: "status", type: "string", access: "r", description: "running | done | error" }
+              - { name: "filePath", type: "string", access: "r" }
+              - { name: "error", type: "string", access: "r" }
         - label: "TakeLane"
           properties:
               - { name: "index", type: "number", access: "r" }
@@ -2335,11 +1388,20 @@ lom_graph:
 
 cypher_contract:
     grammar_summary:
-        query: "MATCH <pattern> [WHERE <expr>] RETURN [DISTINCT] <items> [ORDER BY <expr> [ASC|DESC], ...] [SKIP <integer>] [LIMIT <integer>]"
+        read: "MATCH <pattern> [WHERE <expr>] RETURN [DISTINCT] <items> [ORDER BY <expr> [ASC|DESC], ...] [SKIP <integer>] [LIMIT <integer>]"
+        write_set: "MATCH <pattern> [WHERE <expr>] SET n.prop = <value> [, n.prop2 = <value>]*"
+        write_create_standalone: "CREATE (n:Label {prop: value, ...})"
+        write_create_anchored: "MATCH <pattern> [WHERE <expr>] CREATE (a)-[:REL]->(n:Label {prop: value, ...})"
+        write_delete: "MATCH <pattern> [WHERE <expr>] [DETACH] DELETE n"
+        write_copy: "MATCH <pattern> [WHERE <expr>] COPY n"
         pattern: "(node)-[:REL|OTHER*min..max]->(node)"
         node: "(variable?:Label? { property: scalar, ... }?)"
+        write_values: "scalar, [scalars], [{key: scalar, ...}]（例: MidiClip SET notes）"
         aggregates: "count(*) / count(var) / count(var.prop) / min|max|avg|sum(var.prop)。非集計項目で暗黙グルーピング。"
+        not_supported: "AS aliases, WITH, count(DISTINCT ...), RETURN after write clauses"
     default_max_hops_when_omitted: 8
+    default_row_limit: 500
+    absolute_row_limit: 2000
     start_labels:
         source: "packages/lom-schema/src/schema.ts#startable_labels"
         allowed:
@@ -2358,9 +1420,11 @@ cypher_contract:
             - "Simpler"
             - "Scene"
             - "CuePoint"
-        note: "Note / Parameter / ClipSlot などは起点にできない。起点ラベルから relationship で辿る。"
+            - "WriteEvent"
+            - "RenderJob"
+        note: "WriteEvent / RenderJob は仮想ラベル（読み取り専用）。Note / Parameter / ClipSlot などは通常の起点にできないが relationship で辿れる。"
     read_return_contract:
-        tool: "query"
+        tool: "do"
         allowed:
             - "RETURN *"
             - "RETURN node_variable"
@@ -2370,49 +1434,48 @@ cypher_contract:
             - "count(*) / count(var) / count(var.prop) / min|max|avg|sum(var.prop)"
             - "ORDER BY <var.prop | aggregate> [ASC|DESC], ..."
             - "SKIP <integer> LIMIT <integer>"
-        aggregation_note: "集計関数と非集計項目を混在させると、非集計項目をキーに暗黙グルーピングする。純集計クエリ（グルーピングキー無し）は空マッチでも 1 行を返す（count / sum = 0、min / max / avg = null）。グルーピングありの空マッチは 0 行。MATCH で束縛されていない変数の集計は hint 付き BadRequestError。min / max は数値に加えて文字列も対象（数値同士は数値比較、それ以外は辞書順）。sum / avg は数値プロパティのみ集計する。パースエラーには対応済み文法の hint（AS / WITH / count(DISTINCT ...) 非対応の明示）が付く。"
-    write_select_return_contract:
-        source: "packages/lom-schema/src/schema.ts#query_contract"
-        tools:
-            - "create_clip"
-            - "insert_device"
-            - "create_arrangement_clip"
-            - "delete_arrangement_clip"
-            - "delete_cue_point"
-            - "move_clip"
-            - "trim_clip"
-            - "delete_scene"
-            - "duplicate_scene"
-            - "delete_track"
-            - "duplicate_track"
-            - "delete_device"
-            - "duplicate_device"
-            - "delete_session_clip"
-            - "render_audio"
-            - "set_track"
-            - "set_clip"
-            - "set_scene"
-            - "set_cue_point"
-            - "set_device_parameter"
-            - "save_device_state"
-            - "apply_device_state"
-            - "write_notes"
-            - "transform_notes"
-            - "load_sample"
-        tools_note: "トップレベル入力に select を受け取る全ツール（registerAllTools との突合テスト select-contract.test.ts で固定）。batch はステップ内 select のため対象外。"
-        required: "RETURN exactly one bound node variable"
-        order_by: "ORDER BY は RETURN 変数のプロパティのみ許可（identity 重複排除 → 並べ替え → SKIP / LIMIT の順で適用）。他変数のプロパティ・集計・裸変数の ORDER BY は hint 付き BadRequestError。"
-        valid_examples:
-            - "MATCH (t:AudioTrack {name:\"Print\"}) RETURN t"
-            - "MATCH (t:MidiTrack {name:\"Drums\"})-[:HAS_CLIPSLOT]->(s:ClipSlot {index:0}) RETURN s"
-            - "MATCH (t:Track {name:\"Print\"})-[:HAS_ARRANGEMENT_CLIP]->(c:Clip {index:0}) RETURN c"
-            - "MATCH (t:Track {name:\"Drums\"}) RETURN t"
-            - "MATCH (c:MidiClip {name:\"Bass\"}) RETURN c"
-            - "MATCH (c:CuePoint {name:\"Verse\"}) RETURN c"
-            - "MATCH (:Track {name:\"Lead\"})-[:HAS_DEVICE]->(d:Device {name:\"Operator\"}) RETURN d"
-        invalid_examples:
-            - "MATCH (t:Track) RETURN t.name"
-            - "MATCH (t:Track)-[:HAS_CLIPSLOT]->(s:ClipSlot) RETURN t, s"
+            - "MATCH (e:WriteEvent) RETURN e"
+            - "MATCH (j:RenderJob) RETURN j"
+        row_cap_note: "LIMIT 省略時は DEFAULT_ROW_LIMIT(500) で truncated:true。明示 LIMIT も MAX_ROW_LIMIT(2000) でクランプ。"
+        aggregation_note: "集計関数と非集計項目を混在させると、非集計項目をキーに暗黙グルーピングする。純集計クエリ（グルーピングキー無し）は空マッチでも 1 行を返す（count / sum = 0、min / max / avg = null）。グルーピングありの空マッチは 0 行。MATCH で束縛されていない変数の集計は hint 付き BadRequestError。min / max は数値に加えて文字列も対象（数値同士は数値比較、それ以外は辞書順）。sum / avg は数値プロパティのみ集計する。パースエラーには対応済み文法の hint が付く。"
+    write_contract:
+        tool: "do"
+        source: "packages/lom-schema/src/schema.ts#query_contract.write"
+        target_resolution: "書き込み文の MATCH は複数ノードにマッチ可。0 件は {status:\"no_match\"}。preview:true で対象と予定差分を返す。"
+        set_properties: "WRITABLE_BY_LABEL（apps/extension/src/tools/do/schemas.ts）に準拠。Song/Track/Clip/MidiClip/AudioClip/Scene/CuePoint/Parameter/Simpler/Note。"
+        create_patterns:
+            - "CREATE (t:MidiTrack|AudioTrack {name?})"
+            - "CREATE (s:Scene {index?, name?})"
+            - "CREATE (c:CuePoint {time, name?})"
+            - "MATCH (t:Track) CREATE (t)-[:HAS_DEVICE]->(d:Device {name, index?})"
+            - "MATCH (s:ClipSlot) CREATE (s)-[:HAS_CLIP]->(c:MidiClip {length}) | (c:AudioClip {filePath})"
+            - "MATCH (t:Track) CREATE (t)-[:HAS_ARRANGEMENT_CLIP]->(c:MidiClip|AudioClip {startTime, duration, ...})"
+            - "MATCH (c:MidiClip) CREATE (c)-[:HAS_NOTE]->(n:Note {pitch, startTime, duration, velocity?})"
+        delete_labels:
+            - "Track"
+            - "Scene"
+            - "Device"
+            - "Clip"
+            - "MidiClip"
+            - "AudioClip"
+            - "CuePoint"
+            - "Note"
+        copy_labels:
+            - "Track"
+            - "Scene"
+            - "Device"
+        undoable_levels:
+            full: "スカラー SET、notes/Note、create/copy（逆=生成物削除）、多くの delete 再作成"
+            partial: "sampleFile、配置プロパティ（カスタム warp/marker）、delete Device（カタログ名）"
+            none: "delete Track（confirm 必須、undo 不可）"
+        guards:
+            preview: "全書き込みでドライラン可"
+            confirm: "undoable partial/none の書き込みは confirm:true 必須。full は件数に関わらず即実行。"
+            no_match: "0 件マッチはエラーではなく no_match"
+    render_select_contract:
+        tool: "render"
+        required: "MATCH で AudioTrack を単一ノード変数で RETURN"
+        example: "MATCH (t:AudioTrack {name:\"Print\"}) RETURN t"
 
 error_models:
     type_namespace: "urn:live-connector:error"
@@ -2482,6 +1545,9 @@ decisions:
             - "閾値との関係: 現在 39 ツールで設計閾値 40 以下。今後のツール追加で 40 を継続的に超える場合は、新規追加を集約形式で設計する（既存の個別ツールは残置）方針で再検討する。"
         revisit_when: "登録ツール数が 45 を超えたとき、または MCP クライアント側でツール一覧のコンテキスト消費が実測で問題化したとき。"
     tool_organization_132:
+        status: "superseded"
+        superseded_by: "four_tool_taxonomy_v3"
+        superseded_note: "v3.0.0 の 4 ツール統合（meta/do/undo/render）で置換。39→33 の段階的統合計画は実装されなかった。"
         date: "2026-07-02"
         issue: "#132"
         decision: "次メジャーバージョンで候補 A（プロパティ書き込み統合、6 → 1、削減 5 件）と候補 D（ノート編集統合、2 → 1、削減 1 件）を同梱採用し、登録ツール数を 39 → 33 にする。候補 B・C は不採用。候補 E は運用ツール現状維持。"
@@ -2583,3 +1649,16 @@ decisions:
             - title: "refactor(extension): batch の withinTransaction 制約解消の調査"
               description: "構造操作の batch 対応に必要な SDK 制約（コールバック内 await 不可）のワークアラウンドまたは解消策を調査する。候補 B の採否と独立。"
         revisit_when: "候補 B は `structure_tool_aggregation_104` の revisit_when（登録ツール数が 45 を超えたとき、または MCP クライアント側でツール一覧のコンテキスト消費が実測で問題化したとき）に従う。候補 C は MCP 仕様で operation 単位の annotations 表現が可能になったとき、またはクライアントが annotations を自動承認に使っていないと実測確認できたとき。"
+    four_tool_taxonomy_v3:
+        date: "2026-07-03"
+        status: "adopted"
+        supersedes: "tool_organization_132"
+        decision: "MCP ツール表面を 4 ツール（meta / do / undo / render）へ全面統合する。39 個の操作別ツールは v3.0.0 で削除（deprecation 期間なしの破壊的変更）。"
+        principles:
+            - "1 Cypher 文ツール: 読み取り・書き込みは do の statement 引数に集約（SET / CREATE / DELETE / COPY 方言）。"
+            - "差分応答: 書き込みは changed/created/deleted/copied の差分のみ返す。マッチ 0 件は no_match。"
+            - "undo 一本化: スナップショット・書き込み履歴・batch を廃止し、inverse diff の JSONL undo ログと undo ツールに統合。"
+            - "undoable 宣言と confirm: 各書き込みは undoable full/partial/none を宣言。partial/none は confirm:true 必須。"
+            - "人間タクソノミー 4 動詞: meta（入口）/ do（見る・変える）/ render（聴く）/ undo（戻す）。"
+        context: "v2.17.18 の tool_organization_132 は 39 → 33 件の段階的統合（set_properties + edit_notes）を計画していたが、Cypher 書き込み方言と undo ログへの集約により 4 ツールへ再設計した。"
+        breaking_change: "旧ツール名は v3.0.0 から存在しない。MCP クライアントは meta → do read → do write (preview/confirm) → render → undo の推奨フローへ移行する。"
