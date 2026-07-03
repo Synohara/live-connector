@@ -4,6 +4,11 @@ import type {
     AggregateFunc,
     AggregateItem,
     ComparisonOperator,
+    CopyStatement,
+    CreateNodePattern,
+    CreateStatement,
+    DeleteStatement,
+    MatchClause,
     NodePattern,
     OrderItem,
     OrderKey,
@@ -12,7 +17,11 @@ import type {
     RelationshipPattern,
     ReturnItem,
     ScalarValue,
+    SetAssignment,
+    SetStatement,
+    Statement,
     WhereExpr,
+    WriteValue,
 } from "./ast"
 import { type Token, tokenize } from "./tokenizer"
 
@@ -21,9 +30,23 @@ const DEFAULT_MAX_HOPS = 8
 
 /** パースエラーに添える対応済み文法の案内。AS / WITH / count(DISTINCT ...) 等の非対応構文を明示する。 */
 const SUPPORTED_GRAMMAR_HINT =
-    "Supported grammar: MATCH (n:Label {prop: value})[-[:REL|REL2*1..2]->(m:Label)] [WHERE ...] RETURN [DISTINCT] n | n.prop | count(*) | count(n) | count(n.prop) | min|max|avg|sum(n.prop) [ORDER BY n.prop | count(n) [ASC|DESC]] [SKIP <int>] [LIMIT <int>]. Not supported: AS aliases, WITH, count(DISTINCT ...), CREATE/SET/DELETE (use the write tools instead)."
+    "Supported grammar: MATCH (n:Label {prop: value})[-[:REL|REL2*1..2]->(m:Label)] [WHERE ...] RETURN [DISTINCT] n | n.prop | count(*) | ... [ORDER BY ...] [SKIP <int>] [LIMIT <int>]; MATCH ... SET n.prop = <value> [, n.prop2 = <value>]*; CREATE (n:Label {prop: value}); MATCH ... CREATE (a)-[:REL]->(n:Label {prop: value}); MATCH ... [DETACH] DELETE n; MATCH ... COPY n. Write values: scalar, [scalars], [{key: scalar, ...}]. Not supported: AS aliases, WITH, count(DISTINCT ...), RETURN after write clauses."
 
 const AGGREGATE_FUNCS = new Set<AggregateFunc>(["count", "min", "max", "avg", "sum"])
+
+/** MATCH パターンで束縛される変数名の集合を返す。 */
+function collectBoundVariables(pattern: PatternPart): Set<string> {
+    const variables = new Set<string>()
+    if (pattern.start.variable !== null) {
+        variables.add(pattern.start.variable)
+    }
+    for (const step of pattern.chain) {
+        if (step.node.variable !== null) {
+            variables.add(step.node.variable)
+        }
+    }
+    return variables
+}
 
 /** 集計項目の正規化表記（RETURN 行キー・ORDER BY 参照に使う）。 */
 function aggregateAlias(func: AggregateFunc, arg: AggregateArg): string {
@@ -45,15 +68,50 @@ class Parser {
     }
 
     parse(): Query {
+        const match = this.parseMatchClause()
+        return this.parseReadTail(match)
+    }
+
+    parseStatement(): Statement {
+        const first = this.peek()
+        if (first?.type === "keyword" && first.value === "CREATE") {
+            return this.parseStandaloneCreate()
+        }
+        if (first?.type !== "keyword" || first.value !== "MATCH") {
+            throw this.error(`Expected keyword "MATCH" or "CREATE"`)
+        }
+        const match = this.parseMatchClause()
+        if (this.peekKeyword("RETURN")) {
+            return { kind: "read", query: this.parseReadTail(match) }
+        }
+        if (this.peekKeyword("SET")) {
+            return this.parseSetStatement(match)
+        }
+        if (this.peekKeyword("CREATE")) {
+            return this.parseAnchoredCreateStatement(match)
+        }
+        if (this.peekKeyword("DELETE") || this.peekKeyword("DETACH")) {
+            return this.parseDeleteStatement(match)
+        }
+        if (this.peekKeyword("COPY")) {
+            return this.parseCopyStatement(match)
+        }
+        throw this.error("Expected RETURN, SET, CREATE, DELETE, or COPY after MATCH clause")
+    }
+
+    private parseMatchClause(): MatchClause {
         this.expectKeyword("MATCH")
         const pattern = this.parsePattern()
-
         let where: WhereExpr | null = null
         if (this.peekKeyword("WHERE")) {
             this.next()
             where = this.parseOr()
         }
+        return { pattern, where }
+    }
 
+    private parseReadTail(match: MatchClause): Query {
+        const { pattern, where } = match
         this.expectKeyword("RETURN")
         const distinct = this.consumeKeyword("DISTINCT")
         const returns = this.parseReturnItems()
@@ -79,6 +137,226 @@ class Parser {
             throw this.error(`Unexpected token after RETURN clause`)
         }
         return { pattern, where, distinct, returns, orderBy, skip, limit }
+    }
+
+    private parseStandaloneCreate(): CreateStatement {
+        this.expectKeyword("CREATE")
+        if (!this.peekPunct("(")) {
+            throw this.error(
+                "Standalone CREATE requires a node pattern such as CREATE (n:Label {prop: value})",
+            )
+        }
+        const saved_pos = this.pos
+        this.next()
+        if (this.peekType("identifier")) {
+            this.next()
+            if (this.consumePunct(")") && this.peekPunct("-")) {
+                throw this.error(
+                    "Standalone CREATE cannot use an anchored relationship pattern",
+                    "Use MATCH ... CREATE (a)-[:REL]->(n:Label) for anchored CREATE.",
+                )
+            }
+        }
+        this.pos = saved_pos
+        const node = this.parseCreateNodePattern()
+        if (this.pos < this.tokens.length) {
+            throw this.error(`Unexpected token after CREATE clause`)
+        }
+        return {
+            kind: "create",
+            match: null,
+            anchorVariable: null,
+            relationshipType: null,
+            node,
+        }
+    }
+
+    private parseAnchoredCreateStatement(match: MatchClause): CreateStatement {
+        this.expectKeyword("CREATE")
+        const { anchorVariable, relationshipType, node } = this.parseAnchoredCreatePattern()
+        this.requireBoundVariable(match.pattern, anchorVariable, "anchored CREATE")
+        this.assertNoReturnAfterWrite()
+        return {
+            kind: "create",
+            match,
+            anchorVariable,
+            relationshipType,
+            node,
+        }
+    }
+
+    private parseAnchoredCreatePattern(): {
+        anchorVariable: string
+        relationshipType: string
+        node: CreateNodePattern
+    } {
+        this.expectPunct("(")
+        const anchorVariable = this.expectType("identifier").value
+        if (this.peekPunct(":") || this.peekPunct("{")) {
+            throw this.error("Anchored CREATE anchor must be a bare variable such as (t)")
+        }
+        this.expectPunct(")")
+        const relationshipType = this.parseAnchoredRelationship()
+        const node = this.parseCreateNodePattern()
+        return { anchorVariable, relationshipType, node }
+    }
+
+    private parseAnchoredRelationship(): string {
+        this.expectPunct("-")
+        this.expectPunct("[")
+        this.expectPunct(":")
+        const relationshipType = this.expectType("identifier").value
+        if (this.consumePunct("|")) {
+            throw this.error(
+                "Anchored CREATE supports only a single relationship type",
+                "Use one relationship type, e.g. [:HAS_DEVICE].",
+            )
+        }
+        if (this.consumePunct("*")) {
+            throw this.error("Variable-length relationships are not supported in anchored CREATE")
+        }
+        this.expectPunct("]")
+        this.expectPunct("->")
+        return relationshipType
+    }
+
+    private parseSetStatement(match: MatchClause): SetStatement {
+        this.expectKeyword("SET")
+        const assignments = this.parseSetAssignments()
+        this.assertNoReturnAfterWrite()
+        return { kind: "set", match, assignments }
+    }
+
+    private parseSetAssignments(): SetAssignment[] {
+        const assignments: SetAssignment[] = []
+        do {
+            const variable = this.expectType("identifier").value
+            this.expectPunct(".")
+            const property = this.expectType("identifier").value
+            this.expectPunct("=")
+            const value = this.parseWriteValue()
+            assignments.push({ variable, property, value })
+        } while (this.consumePunct(","))
+        const targetVariables = new Set(assignments.map((assignment) => assignment.variable))
+        if (targetVariables.size > 1) {
+            throw this.error(
+                "SET assignments must target a single variable",
+                "Split assignments across multiple do calls when updating different variables.",
+            )
+        }
+        return assignments
+    }
+
+    private parseDeleteStatement(match: MatchClause): DeleteStatement {
+        if (this.consumeKeyword("DETACH")) {
+            // Cypher 慣習との互換のため DETACH を読み飛ばす（挙動は DELETE と同一）。
+        }
+        this.expectKeyword("DELETE")
+        const variable = this.expectType("identifier").value
+        this.requireBoundVariable(match.pattern, variable, "DELETE")
+        this.assertNoReturnAfterWrite()
+        return { kind: "delete", match, variable }
+    }
+
+    private parseCopyStatement(match: MatchClause): CopyStatement {
+        this.expectKeyword("COPY")
+        const variable = this.expectType("identifier").value
+        this.requireBoundVariable(match.pattern, variable, "COPY")
+        this.assertNoReturnAfterWrite()
+        return { kind: "copy", match, variable }
+    }
+
+    private parseCreateNodePattern(): CreateNodePattern {
+        this.expectPunct("(")
+        let variable: string | null = null
+        let label: string | null = null
+        if (this.peekType("identifier")) {
+            variable = this.next().value
+        }
+        if (this.peekPunct(":")) {
+            this.next()
+            label = this.expectType("identifier").value
+        }
+        if (label === null) {
+            throw this.error("CREATE requires a node label such as (n:Note)")
+        }
+        const createProperties = this.peekPunct("{") ? this.parseCreateProperties() : {}
+        this.expectPunct(")")
+        return { variable, label, properties: {}, createProperties }
+    }
+
+    private parseCreateProperties(): Record<string, WriteValue> {
+        this.expectPunct("{")
+        const properties: Record<string, WriteValue> = {}
+        if (!this.peekPunct("}")) {
+            do {
+                const key = this.expectType("identifier").value
+                this.expectPunct(":")
+                properties[key] = this.parseWriteValue()
+            } while (this.consumePunct(","))
+        }
+        this.expectPunct("}")
+        return properties
+    }
+
+    private parseWriteValue(): WriteValue {
+        if (this.peekPunct("[")) {
+            this.next()
+            if (this.peekPunct("{")) {
+                const maps: Record<string, ScalarValue>[] = []
+                if (!this.peekPunct("]")) {
+                    do {
+                        maps.push(this.parseMapLiteral())
+                    } while (this.consumePunct(","))
+                }
+                this.expectPunct("]")
+                return maps
+            }
+            const values: ScalarValue[] = []
+            if (!this.peekPunct("]")) {
+                do {
+                    values.push(this.parseScalar())
+                } while (this.consumePunct(","))
+            }
+            this.expectPunct("]")
+            return values
+        }
+        return this.parseScalar()
+    }
+
+    private parseMapLiteral(): Record<string, ScalarValue> {
+        this.expectPunct("{")
+        const map: Record<string, ScalarValue> = {}
+        if (!this.peekPunct("}")) {
+            do {
+                const key = this.expectType("identifier").value
+                this.expectPunct(":")
+                map[key] = this.parseScalar()
+            } while (this.consumePunct(","))
+        }
+        this.expectPunct("}")
+        return map
+    }
+
+    private requireBoundVariable(pattern: PatternPart, variable: string, clause: string): void {
+        if (!collectBoundVariables(pattern).has(variable)) {
+            throw this.error(
+                `Variable "${variable}" in ${clause} is not bound in the MATCH pattern`,
+                "Use a variable that appears in the MATCH pattern.",
+            )
+        }
+    }
+
+    private assertNoReturnAfterWrite(): void {
+        if (this.peekKeyword("RETURN")) {
+            throw this.error(
+                "Write statements must not include RETURN; the response includes the diff automatically",
+                "Remove RETURN from the write statement, or use a read-only MATCH ... RETURN query.",
+            )
+        }
+        if (this.pos < this.tokens.length) {
+            throw this.error(`Unexpected token after write clause`)
+        }
     }
 
     private parsePattern(): PatternPart {
@@ -428,12 +706,12 @@ class Parser {
         return this.next()
     }
 
-    private error(message: string): BadRequestError {
+    private error(message: string, hint?: string): BadRequestError {
         const token = this.peek()
         const where =
             token === undefined ? "end of query" : `"${token.value}" (position ${token.start})`
         return new BadRequestError(`Cypher parse error: ${message}, but found ${where}`, {
-            hint: SUPPORTED_GRAMMAR_HINT,
+            hint: hint ?? SUPPORTED_GRAMMAR_HINT,
         })
     }
 }
@@ -441,4 +719,9 @@ class Parser {
 /** Cypher サブセット文字列を AST にパースする。 */
 export function parseQuery(input: string): Query {
     return new Parser(tokenize(input)).parse()
+}
+
+/** 読み取り・書き込みを含む Cypher 文を AST にパースする。 */
+export function parseStatement(input: string): Statement {
+    return new Parser(tokenize(input)).parseStatement()
 }
