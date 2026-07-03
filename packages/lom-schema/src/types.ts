@@ -38,7 +38,6 @@ export type RelationshipDef = {
 export type QueryContract = {
     grammar: string
     start_labels: string[]
-    /** LOM の 2 系統の時刻座標。混同するとノートが意図しない位置に配置される。 */
     time_coordinates: {
         absolute: string
         relative: string
@@ -48,12 +47,27 @@ export type QueryContract = {
         return_contract: string
         allowed_returns: string[]
     }
-    select: {
-        tools: string[]
-        return_contract: string
-        valid_examples: string[]
-        invalid_examples: string[]
-        hint: string
+    write: {
+        tool: string
+        target_resolution: string
+        set_properties: Record<string, string[]>
+        create_patterns: string[]
+        delete_labels: string[]
+        copy_labels: string[]
+        undoable_levels: {
+            full: string
+            partial: string
+            none: string
+        }
+        guards: {
+            preview: string
+            confirm: string
+            no_match: string
+        }
+    }
+    virtual_labels: {
+        WriteEvent: string
+        RenderJob: string
     }
 }
 
