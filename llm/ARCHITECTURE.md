@@ -4,29 +4,37 @@
 
 ## システム概要
 
-live-connector は Ableton Extensions SDK 上で動作する Node.js extension である。Extension Host 内で Node.js 標準 `http` サーバーを起動し、`@modelcontextprotocol/sdk` 同梱の `StreamableHTTPServerTransport` 経由で MCP ツールを提供する。MCP ツールは Live Object Model (LOM) をプロパティグラフとして扱い、Cypher サブセットで読み取り、型付きツールで書き込みを行う。
+live-connector は Ableton Extensions SDK 上で動作する Node.js extension である。Extension Host 内で Node.js 標準 `http` サーバーを起動し、`@modelcontextprotocol/sdk` 同梱の `StreamableHTTPServerTransport` 経由で MCP ツールを提供する。MCP ツールは Live Object Model (LOM) をプロパティグラフとして扱い、Cypher サブセットで読み取りと書き込みを行う。
 
 ```mermaid
 flowchart LR
     agent["AI agent / MCP client"]
     http["Node http server<br/>apps/extension/src/server/http.ts"]
     mcp["MCP server<br/>apps/extension/src/server/mcp.ts"]
-    tools["MCP tools<br/>schema / get_overview / query / render_audio / search_presets / create_* / delete_* / set_* / write_notes"]
+    tools["MCP tools<br/>meta / do / undo / render"]
+    do_router["do router<br/>tools/do.ts + executors"]
     cypher["@live-connector/cypher<br/>parser / evaluator / selector"]
-    adapter["LomGraphAdapter<br/>apps/extension/src/lom/adapter.ts"]
+    adapter["LomGraphAdapter<br/>+ create-adapter virtual labels"]
+    undo_log["undo log<br/>undo/log.ts JSONL"]
+    render_jobs["render jobs<br/>render/jobs.ts"]
     sdk["Ableton Extensions SDK"]
     live["Ableton Live Set"]
-    schema["@live-connector/lom-schema<br/>LOM_SCHEMA"]
-    env["@live-connector/env<br/>typed environment"]
-    error["@live-connector/error<br/>AppError / ProblemDetails / McpError"]
-    log["@live-connector/log<br/>scoped logger"]
+    schema["@live-connector/lom-schema<br/>LOM_SCHEMA / query_contract"]
+    env["@live-connector/env"]
+    error["@live-connector/error"]
+    log["@live-connector/log"]
 
     agent -->|"POST /api/v1/mcp"| http
     http -->|"StreamableHTTPServerTransport"| mcp
     mcp --> tools
-    tools --> cypher
+    tools --> do_router
+    tools --> undo_log
+    tools --> render_jobs
+    do_router --> cypher
     tools --> schema
     cypher --> adapter
+    adapter --> undo_log
+    adapter --> render_jobs
     adapter --> sdk
     sdk --> live
     http --> env
@@ -68,9 +76,9 @@ flowchart TB
 
 | パッケージ | 責務 |
 | --- | --- |
-| `apps/extension` | Ableton extension の起動、HTTP/MCP サーバー、MCP ツール登録、LOM adapter 実装 |
+| `apps/extension` | Ableton extension の起動、HTTP/MCP サーバー、4 MCP ツール登録、LOM adapter 実装、undo ログ、render ジョブ |
 | `packages/cypher` | Cypher サブセットの tokenizer/parser/AST/evaluator。Ableton SDK へ依存しない |
-| `packages/lom-schema` | LOM グラフスキーマ、ラベル、プロパティ、リレーション、例クエリの正本 |
+| `packages/lom-schema` | LOM グラフスキーマ、ラベル、プロパティ、リレーション、例クエリ、do 文法契約の正本 |
 | `packages/env` | 環境変数の zod 検証と型付き `Env` の提供 |
 | `packages/error` | `AppError` 系のエラー定義、HTTP 用 RFC 9457 Problem Details 変換、MCP 用構造化エラー変換 |
 | `packages/log` | scope 付き logger の生成と標準出力/標準エラーへの集約 |
@@ -146,121 +154,96 @@ sequenceDiagram
 
 | tool | 種別 | 説明 |
 | --- | --- | --- |
-| `schema` | read | `LOM_SCHEMA` と `EXAMPLE_QUERIES` を返す |
-| `get_overview` | read | tempo、scale、track 概要、アレンジクリップ、CuePoint、scene/cue count を返す |
-| `query` | read | Cypher サブセットを parse/evaluate して行集合を返す |
-| `get_write_history` | read | 書き込みツールの実行履歴（時刻・ツール名・入力要約・結果）を新しい順に取得する |
-| `verify_device_catalog` | test | 内蔵デバイスカタログ全項目を一時トラックへ挿入試行し挿入可否一覧を返す（Set に残留しない） |
-| `render_audio` | read/render | 1 つの AudioTrack の arrangement pre-FX 音声を WAV にレンダリングする（同期で filePath、または background:true で jobId） |
-| `get_render_job` | read | background render の状態（running/done/error）を jobId で照会する |
-| `search_presets` | read/fs | 指定 root 配下のプリセット候補ファイルを列挙する。適用は行わない |
-| `create_arrangement_clip` | write | 1 つの MidiTrack / AudioTrack に arrangement Clip を startTime/duration 指定で作成する |
-| `delete_arrangement_clip` | write | 1 つの arrangement Clip を削除する |
-| `create_cue_point` | write | time 指定で CuePoint を作成し、任意で `name` を設定する |
-| `delete_cue_point` | write | 1 つの CuePoint を削除する |
-| `create_clip` | write | 空の ClipSlot にセッションクリップを生成する（MidiTrack は length で空 MidiClip、AudioTrack は audioFilePath で AudioClip） |
-| `create_track` | write | MIDI / Audio トラックを生成する（SDK 制約で挿入位置は末尾／選択直後） |
-| `create_scene` | write | index 指定で空の Scene を作成する |
-| `delete_scene` | write | 1 つの Scene を削除する（confirm 必須） |
-| `duplicate_scene` | write | 1 つの Scene を複製する |
-| `delete_track` | write | 1 つの regular Track を削除する（confirm 必須、return/main 不可） |
-| `duplicate_track` | write | 1 つの regular Track を複製する |
-| `delete_device` | write | 1 つの Device を親 Track/Chain から削除する（confirm 必須） |
-| `duplicate_device` | write | 1 つの Device を複製する |
-| `delete_session_clip` | write | 1 つの ClipSlot のセッションクリップを削除する（confirm 必須） |
-| `transform_notes` | write | 1 つの MidiClip の notes を決定的変換する（transpose/shift/velocity/quantize/duplicate） |
-| `set_song` | write | Song の `tempo` を書き込む |
-| `set_track` | write | Track の `name` / `arm` / `mute` / `solo` を書き込む |
-| `set_clip` | write | Clip / AudioClip の mutable property を書き込む |
-| `set_scene` | write | Scene の `name` を書き込む |
-| `set_cue_point` | write | CuePoint の `name` を書き込む |
-| `set_device_parameter` | write | Parameter の `value` を書き込む |
-| `save_device_state` | write/fs | 1 つの Device の公開 DeviceParameter 値を `environment.storageDirectory` に JSON 保存する |
-| `apply_device_state` | write/fs | 保存済み DeviceParameter 値を 1 つの Device の同名パラメータへ再適用する |
-| `load_sample` | write/fs | 1 つの Simpler に importIntoProject + replaceSample でオーディオを読み込む |
-| `write_notes` | write | 1 つの MidiClip の notes を replace / merge / clear_range する |
-| `batch` | write | 複数の書き込み（set_* / write_notes）を 1 つの undo ステップで実行する |
-| `restore_snapshot` | write | snapshotId を指定して set_* / write_notes の変更前の値へ書き戻す |
-| `list_snapshots` | read | 保存済みスナップショット（id / 時刻 / ツール / 種別 / select）を新しい順に取得する |
+| `meta` | read | サービス情報、LOM スキーマ、do 文法契約、例文、仮想ラベル、Live Set overview |
+| `do` | read/write | Cypher 文による読み取り（MATCH … RETURN）と書き込み（SET / CREATE / DELETE / COPY） |
+| `undo` | write | do 書き込みの逆操作を LIFO で適用（`steps` または `writeId`） |
+| `render` | read/render | AudioTrack の arrangement pre-FX 音声を WAV にレンダリング（同期または `background:true`） |
 
 ## MCP メタデータ
 
-`createMcpServer` は initialize 応答の `instructions` に運用規約の要約（推奨手順 schema→query→preview→confirm、時刻座標の 2 系統、ガードレール、ミキサー Parameter 経路）を設定する。ツールには `withToolAnnotations` facade で `TOOL_ANNOTATIONS`（`apps/extension/src/server/annotations.ts`）に基づく annotations を注入する: read 系は `readOnlyHint`、`delete_*` は `destructiveHint`、`set_*` / `apply_device_state` / `restore_snapshot` は `idempotentHint`。facade はツール名・ハンドラを変えないため `tools/list` と `describeRegisteredTools` に影響しない。ミキサーの volume / panning / send は `(Track)-[:HAS_MIXER]->(Mixer)-[:HAS_VOLUME|HAS_PAN|HAS_SEND]->(Parameter)` として `set_device_parameter` で書き込む（`set_track` へ直接追加しない設計）。
+`createMcpServer` は initialize 応答の `instructions` に運用規約の要約（推奨手順 meta→do read→do write→render→undo、時刻座標の 2 系統、ガードレール）を設定する。ツールには `withToolAnnotations` facade で `TOOL_ANNOTATIONS`（`apps/extension/src/server/annotations.ts`）に基づく annotations を注入する: `meta` は `readOnlyHint`、`do` / `undo` は `destructiveHint`、`render` は非破壊。ミキサーの volume / panning / send は `(Track)-[:HAS_MIXER]->(Mixer)-[:HAS_VOLUME|HAS_PAN|HAS_SEND]->(Parameter)` として `do` SET `Parameter.value` で書き込む。
 
 ## 読み取りフロー
 
 ```mermaid
 sequenceDiagram
     participant client as MCP client
-    participant query as query tool
+    participant do as do tool
     participant parser as parseQuery()
     participant evaluator as evaluate()
     participant adapter as LomGraphAdapter
     participant live as Ableton Live Set
 
-    client->>query: cypher
-    query->>parser: parseQuery(cypher)
-    parser-->>query: Query AST
-    query->>evaluator: evaluate(ast, adapter)
-    evaluator->>adapter: seeds(label)
-    evaluator->>adapter: expand(node, relationships)
-    evaluator->>adapter: getProperty(node, property)
+    client->>do: statement (MATCH ... RETURN)
+    do->>parser: parseQuery(statement)
+    parser-->>do: Query AST
+    do->>evaluator: evaluate(ast, adapter)
+    evaluator->>adapter: seeds(label) / expand / getProperty
     adapter->>live: SDK read
     live-->>adapter: values
-    evaluator-->>query: Row[]
-    query-->>client: { count, rows }
+    evaluator-->>do: Row[]
+    do-->>client: { status:ok, count, rows, truncated? }
 ```
 
-`packages/cypher` は SDK 非依存の `GraphAdapter<N>` 越しにグラフを評価する。`LomGraphAdapter` は Ableton SDK の `Song` / `Track` / `Clip` / `Device` / `DeviceParameter` / `NoteDescription` を `LomNode` として包み、LOM schema に定義されたラベルとプロパティへ変換する。
+`packages/cypher` は SDK 非依存の `GraphAdapter<N>` 越しにグラフを評価する。`LomGraphAdapter` は Ableton SDK オブジェクトを `LomNode` として包み、LOM schema に定義されたラベルとプロパティへ変換する。`create-adapter.ts` は仮想ラベル `WriteEvent`（undo ログ）と `RenderJob`（render ジョブ）を query 可能にする。
 
 ## 書き込みフロー
 
 ```mermaid
 sequenceDiagram
     participant client as MCP client
-    participant tool as render_audio / create_* / delete_* / set_* / save/apply_device_state / write_notes
-    participant parser as parseQuery()
-    participant selector as selectNodes()
+    participant do as do tool
+    participant parser as parseStatement()
+    participant executor as set/create/delete/copy
     participant adapter as LomGraphAdapter
+    participant undo as undo/log.ts
     participant context as ExtensionContext
     participant live as Ableton Live Set
 
-    client->>tool: select + mutation payload
-    tool->>parser: parseQuery(select)
-    parser-->>tool: Query AST
-    tool->>selector: selectNodes(ast, adapter)
-    selector->>adapter: seeds / expand / getProperty
-    selector-->>tool: LomNode[]
-    tool->>tool: validate required label and guardrails
-    alt preview
-        tool-->>client: preview payload
+    client->>do: statement + preview? + confirm?
+    do->>parser: parseStatement(statement)
+    parser-->>do: Statement AST
+    do->>executor: execute*(deps, ast, preview, confirm)
+    executor->>adapter: resolveWriteTargets / mutate
+    alt preview or confirm_required
+        executor-->>client: preview / confirm_required / no_match
     else commit
-        tool->>context: withinTransaction()
-        context->>adapter: setProperty(), create/delete clip, create/delete cue, clip.notes = descriptions
-        adapter->>live: SDK write/create
-        tool-->>client: ok payload
+        executor->>context: withinTransaction()
+        context->>adapter: setProperty / create / delete / copy
+        adapter->>live: SDK write
+        executor->>undo: appendUndoEntry(inverse diff)
+        executor-->>client: { status:ok, writeId, undoable, changed|created|deleted|copied }
     end
 ```
 
-単一対象ツールの `select` は対象ノード集合を解決する selector であり、`RETURN` は単一ノード変数に限定される。`render_audio` はちょうど 1 つの `AudioTrack` を要求し、指定 beat 範囲の arrangement pre-FX 音声を WAV として生成する。`create_arrangement_clip` はちょうど 1 つの `MidiTrack` または `AudioTrack` を要求し、arrangement timeline に `startTime` / `duration` 指定で clip を作成する。`delete_arrangement_clip` は `HAS_ARRANGEMENT_CLIP` で辿れる clip だけを削除し、session clip は対象外とする。`create_cue_point` / `delete_cue_point` は Song の CuePoint を作成・削除する。`create_clip` はちょうど 1 つの空 `ClipSlot` を要求し、親が `MidiTrack` である場合のみ空 `MidiClip` を生成する。`set_*` は対象件数が `CONFIRM_THRESHOLD` を超える場合に `confirm:true` を要求する。`set_cue_point` は `CuePoint.name` を書き込む。`save_device_state` / `apply_device_state` はちょうど 1 つの `Device` を要求し、公開 `DeviceParameter` の値だけを JSON 保存・再適用する。`write_notes` はちょうど 1 つの `MidiClip` を要求し、notes を replace する。
+`do` は `parseStatement` で read / set / create / delete / copy を分岐する。書き込みは差分のみ返し、マッチ 0 件は `{status:"no_match"}`。全書き込みは inverse diff を undo ログへ記録し、`undoable`（full / partial / none）を宣言する。`partial` / `none` は `confirm:true` 必須。
 
 ## 一括書き込み（batch）
 
-`ExtensionContext.withinTransaction(fn)` はネストすると最外へ統合され 1 undo ステップになるが、コールバックは同期でなければならず（内部で await 不可）、`Promise.all([...])` を返すことで複数の非同期ミューテーションを 1 ステップにまとめる。この制約から `batch` は「全ステップの対象を先に非同期で解決・検証 → 全ミューテーションを 1 つの同期 `withinTransaction` コールバック内で初期化」する。対象は `set_*` と `write_notes` のように「解決後に同期適用できる」書き込みに限る。同期コールバック内で await できないため、後続ステップは同一 batch 内で先行ステップが作成したオブジェクトを参照できず、構造操作（create / delete / duplicate）は本ツールの対象外。解決・検証段階（入力検証は単体ツールと同一の zod スキーマ）で失敗した場合は何も適用せず失敗ステップを返す。適用段階で失敗した場合は SDK トランザクションがロールバックしないため適用済みステップが Set に残り、応答の appliedSteps / failedSteps / unappliedSteps で識別し書き込み履歴にも記録する。同一クリップへの複数 write_notes ステップは適用時にその時点の notes から逐次再解決され、先行ステップの結果を保持する。
+v3.0.0 で廃止。複数ノードへの `MATCH … SET` が単一トランザクションで代替される。旧 `batch` は `set_*` / `write_notes` を 1 undo ステップに束ねる手続き集約レイヤだったが、undo ログ一本化により不要となった。
 
-## 巻き戻し（スナップショット）
+## 巻き戻し（undo ログ）
 
-SDK v1.0.0-beta.0 には undo / redo を実行する API が無い（`ExtensionContext` はトランザクションの undoable 性を記述するのみ）。このため `set_*` / `write_notes` は適用直前に旧値を `environment.storageDirectory/snapshots/<id>.json` へスナップショットし、応答に `snapshotId` を返す。`restore_snapshot` は `select` を再解決して旧プロパティ値 / 旧 notes を書き戻す。復元は best-effort であり、対象が削除・移動されている場合や select が異なる件数にマッチする場合は部分的・不可となる。構造操作（create / delete / duplicate）や `move_clip` / `trim_clip` の非可逆属性はこの機構の対象外。保持は最新 `MAX_SNAPSHOTS`(100) 件でローテーションする。upstream（Ableton Extensions SDK）への undo / redo API 追加要望は本機構の前提であり、追加され次第この代替を置き換える。
+SDK v1.0.0-beta.0 には undo / redo を実行する API が無い（`ExtensionContext` はトランザクションの undoable 性を記述するのみ）。v3.0.0 ではスナップショット機構に代わり、**inverse diff 合成**による MCP 側 undo を提供する。
+
+- 永続化: `environment.storageDirectory/undo/undo-log.jsonl`（JSONL、最大 200 件ローテーション）
+- 各書き込みは `writeId` と `inverse[]`（`set_properties` / `notes_replace` / `delete_created` / `recreate`）を記録
+- `recreate` は `RecreateBlueprint`（arrangement/session clip、device、note、cue_point、scene）で削除対象を再作成
+- `undo` ツールは LIFO（既定 `steps:1`）。`writeId` 指定も可。undo 自体は新しい undo エントリを作らない
+- `undoable`: `full`（完全復元可）/ `partial`（一部属性喪失の可能性、confirm 必須）/ `none`（復元不可、confirm 必須）
+- 照会: 仮想ラベル `WriteEvent`（`do` read: `MATCH (e:WriteEvent) RETURN e`）
+
+upstream（Ableton Extensions SDK）への undo / redo API 追加要望は本機構の前提であり、追加され次第この代替を置き換える。
 
 ## upstream（Ableton Extensions SDK）への要望
 
 SDK v1.0.0-beta.0 に不足しており、本リポジトリが回避策・scope 縮小で代替している API の一覧。追加され次第、対応する代替を置き換える。
 
-- **undo / redo API**: 上の「巻き戻し（スナップショット）」を参照。スナップショット機構はこの欠如の代替である。
+- **undo / redo API**: 上の「巻き戻し（undo ログ）」を参照。inverse diff 機構はこの欠如の代替である。
 - **MIDI トラックの render / freeze / resample API**: `llm/midi-audition.md` の「真の解決（upstream）」を参照。手動 resample 前提の置き換え。
-- **トラック生成の挿入位置引数**: `Song.createMidiTrack()` / `Song.createAudioTrack()` は挿入位置（index）を受け取らず、生成位置は「最後に選択されたトラックの直後（未選択なら末尾）」に固定される。`create_track` はこの制約により挿入位置指定を提供できない（#14 は挿入位置なしへ scope 縮小して実装）。
+- **トラック生成の挿入位置引数**: `Song.createMidiTrack()` / `Song.createAudioTrack()` は挿入位置（index）を受け取らず、生成位置は「最後に選択されたトラックの直後（未選択なら末尾）」に固定される。`do` CREATE Track はこの制約により挿入位置指定を提供できない。
 - **選択状態（selection）の読み取り・設定 API**: トラックの生成位置が選択状態に依存する一方、SDK から選択トラックを読むことも設定することもできないため、生成位置を制御も予測もできない。
-- **トラック移動（並べ替え）API**: 生成後に意図した位置へ移動する代替も、トラックの並べ替え API が無いため取れない。挿入位置引数・選択状態 API のいずれかがあれば `create_track` の位置指定は実現できる。
+- **トラック移動（並べ替え）API**: 生成後に意図した位置へ移動する代替も、トラックの並べ替え API が無いため取れない。
 
 ## データ所有
 
@@ -268,8 +251,8 @@ SDK v1.0.0-beta.0 に不足しており、本リポジトリが回避策・scope
 flowchart LR
     lom_schema["LOM_SCHEMA<br/>labels / properties / relationships"]
     adapter["LomGraphAdapter<br/>runtime mapping"]
-    cypher_ast["Query AST<br/>packages/cypher"]
-    tools["Tool input/output shapes<br/>apps/extension/src/tools"]
+    cypher_ast["Statement / Query AST<br/>packages/cypher"]
+    tools["Tool input/output shapes<br/>meta / do / undo / render"]
     models["llm/models.yaml<br/>LLM-facing inventory"]
 
     lom_schema --> adapter
@@ -282,20 +265,16 @@ flowchart LR
 
 `llm/models.yaml` は実装の代替ではなく、LLM が参照するモデル目録である。TypeScript 型や zod schema を変更した場合は、対応する項目を更新する。
 
-## 書き込み履歴
-
-`createMcpServer` は `withWriteHistory` facade を通してツールを登録する。facade は `WRITE_HISTORY_TOOLS` に含まれる書き込みツールのハンドラをラップし、結果が `status:"ok"` の実書き込みのみ `environment.storageDirectory/history/write-history.jsonl` へ JSONL 追記する（preview / confirm_required / error は記録しない）。ツール名は変えないため `tools/list` と `describeRegisteredTools` に影響しない。`get_write_history` は件数・時刻範囲でこの履歴を取得し、ホスト再起動をまたいで参照できる。上限（`MAX_HISTORY_BYTES`）超過時は末尾 `MAX_HISTORY_ENTRIES` 件へローテーションする。
-
 ## 現在の制約
 
 - MCP tool error は `toMcpError()` により `{ error, detail, hint?, validProperties?, validRelationships?, validStartLabels? }` 形式で返る。HTTP の `status` / `type` / `instance` は MCP tool error には含めない。
 - HTTP 層のエラーは `toProblemDetails()` により RFC 9457 Problem Details 形式を維持する。
-- `query` の `RETURN` は射影を許可するが、書き込み系 `select` の `RETURN` は単一ノード変数に限定される。
-- `Clip.startTime` / `startMarker` / `endMarker` / `loopStart` / `loopEnd` は SDK 上 read-only であり、arrangement clip の移動・トリムは直接ツール化しない。必要な場合は削除と再作成で表現する。
-- Ableton Extensions SDK には Browser API とネイティブプリセット読込 API が無いため、`search_presets` はファイル列挙のみを行う。`.adv` / `.adg` / third-party plug-in preset の適用は対象外とする。
-- Device state snapshot は SDK に公開される `DeviceParameter` の値だけを対象とし、plug-in の非公開内部状態は保存・復元しない。
-- Cypher サブセットは `MATCH ... [WHERE ...] RETURN ... [LIMIT n]`、有向 relationship、可変長 hop、基本比較演算を対象にする。
-- `LomGraphAdapter.seeds()` で開始できるラベルは `Song` / `Track` family / `Clip` family / `Device` family / `Scene` / `CuePoint` である。
+- `do` read の `RETURN` は射影・集計・ORDER BY / SKIP / LIMIT に対応。LIMIT 省略時は 500 行で truncate。
+- `Clip.startTime` / `startMarker` / `endMarker` は arrangement 配置の SET で変更可能（`arrangement-edit.ts`）。カスタム warp grid 等は `undoable: partial` として申告される。
+- Ableton Extensions SDK には Browser API とネイティブプリセット読込 API が無い。third-party plug-in preset の適用は対象外。
+- Device parameter の保存・復元専用ツールは廃止。`do` read で Parameter 値を取得し、`do` SET で再適用する。
+- Cypher サブセットは `MATCH ... RETURN`（読み取り）、`MATCH ... SET / CREATE / DELETE / COPY`（書き込み）、有向 relationship、可変長 hop、基本比較演算を対象にする。
+- `LomGraphAdapter.seeds()` で開始できるラベルは `Song` / `Track` family / `Clip` family / `Device` family / `Scene` / `CuePoint` / 仮想 `WriteEvent` / `RenderJob` である。
 - `ableton-sdk/` は外部配布物であり、workspace には同梱しない。
-- SDK は Live Set の名称・ファイルパスを公開しない（`Environment` は language / storageDirectory / tempDirectory のみ、`Song` / `Application` に name / path getter は無い）。接続先の変化は `get_overview` / `/health` の構造ダイジェストと `songHandle` の変化で検知する。push 型のイベント通知は SDK 非対応。
-- SDK に MIDI トラックの合成出力を audio 化する手段（render / freeze / resample / bounce）は無い。`render_audio`（`renderPreFxAudio`）は AudioTrack の pre-FX 音声のみ対象。MIDI 楽器の実音検証は手動 resample が前提（`llm/midi-audition.md`）。近似合成（notes→WAV）は本リポジトリの射程外として記録する。
+- SDK は Live Set の名称・ファイルパスを公開しない。接続先の変化は `meta` overview / `/health` の構造ダイジェストと `songHandle` の変化で検知する。
+- SDK に MIDI トラックの合成出力を audio 化する手段は無い。`render`（`renderPreFxAudio`）は AudioTrack の pre-FX 音声のみ対象。MIDI 楽器の実音検証は手動 resample が前提（`llm/midi-audition.md`）。

@@ -2,6 +2,7 @@ import { BadRequestError } from "@live-connector/error"
 import type {
     AggregateItem,
     ComparisonExpr,
+    MatchClause,
     NodePattern,
     OrderItem,
     Query,
@@ -169,9 +170,12 @@ async function evalWhere<N>(
     return compareScalar(actual, expr.operator, expr.right)
 }
 
-/** パターンマッチ・WHERE・LIMIT を適用して束縛集合を返す（read/select 共通）。 */
-async function matchBindings<N>(query: Query, adapter: GraphAdapter<N>): Promise<Binding<N>[]> {
-    const start = query.pattern.start
+/** パターンマッチ・WHERE を適用して束縛集合を返す（read / write 共通）。 */
+async function matchBindings<N>(
+    match: MatchClause,
+    adapter: GraphAdapter<N>,
+): Promise<Binding<N>[]> {
+    const start = match.pattern.start
     let bindings: Binding<N>[] = []
 
     for (const node of await adapter.seeds(start.label)) {
@@ -184,7 +188,7 @@ async function matchBindings<N>(query: Query, adapter: GraphAdapter<N>): Promise
         }
     }
 
-    for (const step of query.pattern.chain) {
+    for (const step of match.pattern.chain) {
         const next: Binding<N>[] = []
         for (const binding of bindings) {
             for (const node of await expandHops(adapter, binding.current, step.relationship)) {
@@ -200,10 +204,10 @@ async function matchBindings<N>(query: Query, adapter: GraphAdapter<N>): Promise
         bindings = next
     }
 
-    if (query.where !== null) {
+    if (match.where !== null) {
         const filtered: Binding<N>[] = []
         for (const binding of bindings) {
-            if (await evalWhere(adapter, query.where, binding)) {
+            if (await evalWhere(adapter, match.where, binding)) {
                 filtered.push(binding)
             }
         }
@@ -212,6 +216,31 @@ async function matchBindings<N>(query: Query, adapter: GraphAdapter<N>): Promise
 
     // DISTINCT / ORDER BY / SKIP / LIMIT は行射影後に適用するため、ここでは行わない。
     return bindings
+}
+
+/** MatchClause の束縛から指定変数のノード集合を identity で重複排除して返す。 */
+export async function resolveWriteTargets<N>(
+    match: MatchClause,
+    variable: string,
+    adapter: GraphAdapter<N>,
+): Promise<N[]> {
+    const bindings = await matchBindings(match, adapter)
+    const seen = new Set<unknown>()
+    const nodes: N[] = []
+    for (const binding of bindings) {
+        const node = binding.vars.get(variable)
+        if (node === undefined) {
+            throw new BadRequestError(`Unknown variable "${variable}" in write target resolution`, {
+                hint: "Use a variable that is bound in the MATCH pattern.",
+            })
+        }
+        const id = adapter.identity(node)
+        if (!seen.has(id)) {
+            seen.add(id)
+            nodes.push(node)
+        }
+    }
+    return nodes
 }
 
 /** SKIP / LIMIT を配列へ適用する（skip 未指定=0、limit 未指定=末尾まで）。 */
@@ -255,7 +284,7 @@ export async function selectNodes<N>(query: Query, adapter: GraphAdapter<N>): Pr
         throw new BadRequestError(select_return_hint, select_return_metadata)
     }
     const order_properties = selectOrderProperties(query.orderBy, target.variable)
-    const bindings = await matchBindings(query, adapter)
+    const bindings = await matchBindings({ pattern: query.pattern, where: query.where }, adapter)
     const seen = new Set<unknown>()
     let nodes: N[] = []
     for (const binding of bindings) {
@@ -637,7 +666,7 @@ async function evaluateAggregate<N>(
 
 /** AST を GraphAdapter 越しに評価し、結果行を返す（集計・DISTINCT・ORDER BY・SKIP・LIMIT を適用）。 */
 export async function evaluate<N>(query: Query, adapter: GraphAdapter<N>): Promise<Row[]> {
-    const bindings = await matchBindings(query, adapter)
+    const bindings = await matchBindings({ pattern: query.pattern, where: query.where }, adapter)
     const hasAggregate = query.returns.some((item) => item.kind === "aggregate")
 
     let rows: Row[]

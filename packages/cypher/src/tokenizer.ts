@@ -33,6 +33,11 @@ const KEYWORDS = new Set([
     "SKIP",
     "ASC",
     "DESC",
+    "SET",
+    "CREATE",
+    "DELETE",
+    "DETACH",
+    "COPY",
 ])
 
 const PUNCT_TWO = new Set(["->", "..", ">=", "<=", "<>"])

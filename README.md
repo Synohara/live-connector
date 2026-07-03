@@ -11,12 +11,12 @@ live-connector は、Ableton Live を AI エージェントから操作するた
 ## 必要なもの
 
 - Ableton Live（Extensions 対応の Beta ビルド）
-- [live-connector v2.17.18](https://github.com/philtzjp/live-connector/releases/tag/v2.17.18) の `.ablx`
+- [live-connector v3.0.0](https://github.com/philtzjp/live-connector/releases/tag/v3.0.0) の `.ablx`
 - Claude Code などの HTTP MCP クライアント
 
 ## インストール
 
-1. [`live-connector-2.17.18.ablx`](https://github.com/philtzjp/live-connector/releases/download/v2.17.18/live-connector-2.17.18.ablx) をダウンロードします。
+1. [`live-connector-3.0.0.ablx`](https://github.com/philtzjp/live-connector/releases/download/v3.0.0/live-connector-3.0.0.ablx) をダウンロードします。
 2. Ableton Live を起動し、Preferences → Extensions を開きます。
 3. `Choose file` から `.ablx` を選択、または `.ablx` を Extensions ページへドロップします。
 4. Developer Mode を OFF にします。
@@ -31,7 +31,7 @@ Live 起動後、ブラウザで次の URL を開きます。
 ページに次のような JSON が表示されれば、live-connector は起動しています。
 
 ```json
-{"status":"pass","version":"2.17.18","description":"live-connector MCP server","tools":{ ... },"structure":{ ... }}
+{"status":"pass","version":"3.0.0","description":"live-connector MCP server","tools":{ ... },"structure":{ ... }}
 ```
 
 ## Claude Code で使う
@@ -46,32 +46,40 @@ claude mcp add --transport http live-connector http://127.0.0.1:7799/api/v1/mcp 
 
 ## できること
 
-- Live Set の概要取得（構造ダイジェスト・接続先識別を含む）: `get_overview`
-- Live Object Model のスキーマ確認: `schema`
-- Cypher サブセットによる読み取り: `query`（集計 count/min/max/avg/sum・ORDER BY・DISTINCT・SKIP/LIMIT）
-- トラック・シーン・デバイスの生成／削除／複製、Session / Arrangement クリップの作成と削除
-- 内蔵デバイス（音源・エフェクト）の挿入: `insert_device`、Simpler へのサンプル読み込み: `load_sample`
-- MIDI ノートの書き込み（replace / merge / clear_range・境界検証）とサーバー側変換（transpose / quantize / velocity など）: `transform_notes`
-- トラック・クリップ・シーン・デバイスパラメータ・Cue Point の更新（ミキサー volume/pan/send も Parameter として書き込み可）
-- Arrangement 範囲のオーディオ書き出し（同期／`background` ジョブ）: `render_audio`
-- 書き込み履歴の参照: `get_write_history`、変更前へのロールバック: `restore_snapshot`、複数書き込みの一括実行: `batch`
-- デバイス状態の保存と再適用: `save_device_state` / `apply_device_state`
+v3.0.0 では MCP ツールが 4 つに統合されています。推奨フローは **meta → do read → do write → render → undo** です。
 
-例:
+| 動詞 | ツール | できること |
+| --- | --- | --- |
+| 入口 | `meta` | サービス情報、LOM スキーマ、Cypher 文法契約、例文、Live Set overview |
+| 見る・変える | `do` | Cypher で読み取り（MATCH … RETURN）と書き込み（SET / CREATE / DELETE / COPY） |
+| 聴く | `render` | AudioTrack の指定範囲を Pre-FX オーディオとしてレンダリング |
+| 戻す | `undo` | do 書き込みの取り消し（LIFO）。履歴は `do` read の `WriteEvent` 仮想ラベルで照会 |
+
+読み取り例:
 
 ```cypher
 MATCH (:Track {name:"Drums"})-[:HAS_DEVICE]->(:Device {name:"Operator"})-[:HAS_PARAM]->(p:Parameter {name:"Cutoff"})
 RETURN p.value, p.min, p.max
 ```
 
+書き込み例:
+
+```cypher
+MATCH (t:Track {name:"Drums"}) SET t.mute = true
+```
+
+```cypher
+CREATE (t:MidiTrack {name:"Bass"})
+```
+
 ## 注意点
 
 - インストール済み `.ablx` を使う場合、Developer Mode は OFF にします。
 - `localhost:7799` が起動しない場合は、Ableton Live を再起動し、`/health` を確認してください。
-- v2.0.0 で `localhost:7799` が起動しない場合は、v2.0.1 以降の `.ablx` に更新してください。
+- v3.0.0 は **破壊的変更**です。v2.x の個別ツール名（`query` / `set_track` / `render_audio` 等）は存在しません。
 - Ableton Extensions SDK v1.0.0-beta.0 には Browser API がないため、`.adv` / `.adg` / third-party plug-in のネイティブプリセットを Live へ直接読み込むことはできません。
-- third-party plug-in の非公開内部状態や波形選択は保存・復元できません。`save_device_state` / `apply_device_state` の対象は SDK から見える host 公開パラメータに限定されます。
-- SDK には MIDI 楽器トラックの合成出力を audio 化する手段（render / freeze / resample）がありません。`render_audio` は AudioTrack の pre-FX 音声のみ対象です。MIDI 楽器の実音を検証するには、Live 上で対象トラックを AudioTrack へ手動で resample / freeze してから `render_audio` を適用します（詳細は `llm/midi-audition.md`）。
+- third-party plug-in の非公開内部状態や波形選択は保存・復元できません。デバイスパラメータの保存・復元は `do` read で Parameter 値を取得し、`do` SET で再適用してください（旧 `save_device_state` / `apply_device_state` は廃止）。
+- SDK には MIDI 楽器トラックの合成出力を audio 化する手段がありません。`render` は AudioTrack の pre-FX 音声のみ対象です。MIDI 楽器の実音を検証するには、Live 上で対象トラックを AudioTrack へ手動で resample / freeze してから `render` を適用します（詳細は `llm/midi-audition.md`）。
 
 ## 開発
 
@@ -84,7 +92,7 @@ pnpm lint        # Biome によるリント
 pnpm format      # Biome によるフォーマット
 ```
 
-`pnpm test` は `packages/cypher`（tokenizer / parser / evaluator / selectNodes）、`packages/lom-schema`（ラベル継承・サブタイプ判定）、`apps/extension`（フェイク SDK とフェイク MCP サーバーによるツール層）を検証します。cypher の評価器はフェイク `GraphAdapter` で駆動し、SDK 非依存で回帰を固定します。`typecheck` と `test` は lefthook の `pre-push` で実行します。
+`pnpm test` は `packages/cypher`（tokenizer / parser / evaluator / parseStatement）、`packages/lom-schema`（ラベル継承・サブタイプ判定）、`apps/extension`（フェイク SDK とフェイク MCP サーバーによる meta / do / undo / render ツール層）を検証します。`typecheck` と `test` は lefthook の `pre-push` で実行します。
 
 ## ライセンス
 

@@ -4,7 +4,12 @@ export type {
     AggregateItem,
     ComparisonExpr,
     ComparisonOperator,
+    CopyStatement,
+    CreateNodePattern,
+    CreateStatement,
+    DeleteStatement,
     LogicalExpr,
+    MatchClause,
     NodePattern,
     NotExpr,
     OrderItem,
@@ -12,11 +17,22 @@ export type {
     PatternPart,
     PropertyRef,
     Query,
+    ReadStatement,
     RelationshipPattern,
     ReturnItem,
     ScalarValue,
+    SetAssignment,
+    SetStatement,
+    Statement,
     WhereExpr,
+    WriteValue,
 } from "./ast"
-export { evaluate, type GraphAdapter, type Row, selectNodes } from "./evaluator"
-export { parseQuery } from "./parser"
+export {
+    evaluate,
+    type GraphAdapter,
+    type Row,
+    resolveWriteTargets,
+    selectNodes,
+} from "./evaluator"
+export { parseQuery, parseStatement } from "./parser"
 export { type Token, type TokenType, tokenize } from "./tokenizer"

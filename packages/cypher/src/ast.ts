@@ -99,3 +99,61 @@ export type Query = {
     skip: number | null
     limit: number | null
 }
+
+export type WriteValue = ScalarValue | ScalarValue[] | Record<string, ScalarValue>[]
+
+export type MatchClause = {
+    pattern: PatternPart
+    where: WhereExpr | null
+}
+
+export type SetAssignment = {
+    variable: string
+    property: string
+    value: WriteValue
+}
+
+export type SetStatement = {
+    kind: "set"
+    match: MatchClause
+    assignments: SetAssignment[]
+}
+
+export type CreateNodePattern = NodePattern & {
+    createProperties: Record<string, WriteValue>
+}
+
+export type CreateStatement = {
+    kind: "create"
+    /** MATCH 節が無い単独 CREATE は null。 */
+    match: MatchClause | null
+    /** アンカー付き CREATE（(v)-[:REL]->(n:Label {...})）のアンカー変数。単独 CREATE は null。 */
+    anchorVariable: string | null
+    /** アンカー付き CREATE のリレーションタイプ。単独 CREATE は null。 */
+    relationshipType: string | null
+    node: CreateNodePattern
+}
+
+export type DeleteStatement = {
+    kind: "delete"
+    match: MatchClause
+    variable: string
+}
+
+export type CopyStatement = {
+    kind: "copy"
+    match: MatchClause
+    variable: string
+}
+
+export type ReadStatement = {
+    kind: "read"
+    query: Query
+}
+
+export type Statement =
+    | ReadStatement
+    | SetStatement
+    | CreateStatement
+    | DeleteStatement
+    | CopyStatement

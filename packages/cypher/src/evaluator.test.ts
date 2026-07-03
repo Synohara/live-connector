@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { evaluate, selectNodes } from "./evaluator"
-import { parseQuery } from "./parser"
+import { evaluate, resolveWriteTargets, selectNodes } from "./evaluator"
+import { parseQuery, parseStatement } from "./parser"
 import { FakeGraph, type FakeNode } from "./test-support/fake-graph"
 
 function buildGraph(): FakeGraph {
@@ -135,5 +135,33 @@ describe("selectNodes", () => {
         await expect(
             selectNodes(parseQuery("MATCH (t:Track) RETURN t ORDER BY t"), buildGraph()),
         ).rejects.toThrow(/property of the returned variable "t"/)
+    })
+})
+
+describe("resolveWriteTargets", () => {
+    it("returns the same deduplicated nodes as selectNodes for a bound variable", async () => {
+        const graph = new FakeGraph([
+            { id: 0, label: "Song", props: {}, edges: { HAS_TRACK: [1], HAS_MAIN: [1] } },
+            { id: 1, label: "MidiTrack", props: { name: "Drums" }, edges: {} },
+        ])
+        const query = parseQuery("MATCH (s:Song)-[:HAS_TRACK|HAS_MAIN]->(t:MidiTrack) RETURN t")
+        const targets = await resolveWriteTargets(
+            { pattern: query.pattern, where: query.where },
+            "t",
+            graph,
+        )
+        const selected = await selectNodes(query, graph)
+        expect(targets.map((node) => node.id)).toEqual(selected.map((node) => node.id))
+        expect(targets).toHaveLength(1)
+    })
+
+    it("filters targets via WHERE in the match clause", async () => {
+        const graph = buildGraph()
+        const statement = parseStatement("MATCH (t:Track) WHERE t.mute = true DELETE t")
+        if (statement.kind !== "delete") {
+            return
+        }
+        const targets = await resolveWriteTargets(statement.match, "t", graph)
+        expect(targets.map((node) => node.id)).toEqual([2])
     })
 })
