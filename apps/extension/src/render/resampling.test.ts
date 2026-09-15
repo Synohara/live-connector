@@ -227,4 +227,80 @@ describe("Main capture", () => {
             runRender(deps, { ...baseParams(), preview: true } as never),
         ).rejects.toMatchObject({ code: "OSC_UNAVAILABLE" })
     })
+
+    it("conflicts when the same requestId is reused with different arguments", async () => {
+        const state = makeFakeOscState()
+        const { deps, live } = await buildDeps(state)
+        state.trackNamesSource = () => live.song.tracks.map((track) => track.name)
+        state.beatStepPerRead = 100
+        state.onStop = () => {
+            const capture = live.song.tracks[live.song.tracks.length - 1]
+            capture?.arrangementClips.push(makeClip(0, 8))
+        }
+        const preview = await runRender(deps, { ...baseParams(), preview: true } as never)
+        const started = await runRender(deps, {
+            ...baseParams(),
+            planId: preview.planId,
+            requestId: "conflict-request",
+            confirm: true,
+        } as never)
+        await waitForJob(String(started.jobId), (job) => job.status === "done")
+
+        await expect(
+            runRender(deps, {
+                source: "main",
+                startTime: 0,
+                endTime: 16,
+                planId: preview.planId,
+                requestId: "conflict-request",
+                confirm: true,
+            } as never),
+        ).rejects.toMatchObject({ code: "REQUEST_ID_CONFLICT" })
+    })
+
+    it("retains the capture track when keepCaptureTrack is true", async () => {
+        const state = makeFakeOscState()
+        const { deps, live } = await buildDeps(state)
+        state.trackNamesSource = () => live.song.tracks.map((track) => track.name)
+        state.onStop = () => {
+            const capture = live.song.tracks[live.song.tracks.length - 1]
+            capture?.arrangementClips.push(makeClip(0, 8))
+        }
+        const preview = await runRender(deps, {
+            ...baseParams(),
+            keepCaptureTrack: true,
+            preview: true,
+        } as never)
+        const started = await runRender(deps, {
+            ...baseParams(),
+            keepCaptureTrack: true,
+            planId: preview.planId,
+            requestId: "keep-track",
+            confirm: true,
+        } as never)
+        const job = await waitForJob(
+            String(started.jobId),
+            (candidate) => candidate.status === "done",
+        )
+
+        expect(job.captureTrackRetained).toBe(true)
+        expect(live.song.tracks).toHaveLength(2)
+        const capture = live.song.tracks[1]
+        expect(capture?.mute).toBe(true)
+        expect(capture?.arm).toBe(false)
+    })
+
+    it("reports OSC unavailable when the reply port is in use", async () => {
+        const state = makeFakeOscState()
+        state.bindError = Object.assign(new Error("address in use"), { code: "EADDRINUSE" })
+        const { deps } = await buildDeps(state)
+
+        expect(deps.runtime.oscConnected()).toBe(false)
+        const capabilities = deps.runtime.capabilities()
+        expect(capabilities.render.mainOutput.available).toBe(false)
+        expect(capabilities.render.mainOutput.reason).toBeDefined()
+        await expect(
+            runRender(deps, { ...baseParams(), preview: true } as never),
+        ).rejects.toMatchObject({ code: "OSC_UNAVAILABLE" })
+    })
 })
