@@ -157,22 +157,19 @@ export type HybridErrorCode =
     | "OSC_PORT_IN_USE"
     | "OSC_WRITE_UNCERTAIN"
     | "CAPTURE_ROUTING_UNAVAILABLE"
+    | "ARM_CONFLICT"
     | "ARTIFACT_STORAGE_UNAVAILABLE"
     | "UNEXPECTED_RECORDING"
     | "AUDIO_ARTIFACT_INVALID"
     | "PROCEDURE_NOT_ALLOWED"
+    | "CAPTURE_CANCELLED"
     | "RECORDING_LIMIT_EXCEEDED"
 
 /** Hybrid Runtime のエラー。コードで失敗種別を機械可読に伝える。 */
 export class HybridError extends AppError {
     readonly code: HybridErrorCode
 
-    constructor(
-        code: HybridErrorCode,
-        detail: string,
-        status = 409,
-        metadata?: McpErrorMetadata,
-    ) {
+    constructor(code: HybridErrorCode, detail: string, status = 409, metadata?: McpErrorMetadata) {
         super({
             type: `${ERROR_TYPE_BASE_URI}:hybrid`,
             title: "Hybrid Operation Error",
