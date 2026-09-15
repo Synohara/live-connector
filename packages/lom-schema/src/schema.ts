@@ -152,7 +152,7 @@ export const query_contract: QueryContract = {
     procedure: {
         tool: "do",
         grammar:
-            'CALL <procedure>(<literal> [, ...])。手続き名は許可リストのみ、引数は文字列・数値・真偽値・null のリテラルに限る。動的関数名・変数参照・複数文は受理しない。例: CALL transport.seek(32)',
+            "CALL <procedure>(<literal> [, ...])。手続き名は許可リストのみ、引数は文字列・数値・真偽値・null のリテラルに限る。動的関数名・変数参照・複数文は受理しない。例: CALL transport.seek(32)",
         allowed: [
             {
                 name: "transport.play",
@@ -185,8 +185,7 @@ export const query_contract: QueryContract = {
         ],
         guards: {
             literals_only: "引数はリテラルのみ。式・変数・動的関数名は拒否する。",
-            preview:
-                "preview:true は OSC 送信を含め副作用ゼロ。計画と事前検査のみを返す。",
+            preview: "preview:true は OSC 送信を含め副作用ゼロ。計画と事前検査のみを返す。",
             confirm: "全手続きで confirm:true 必須。confirm なしは confirm_required を返す。",
             lock: "Main 録音中は書き込み・別 render・transport.play/seek を拒否し、cancel と読取は許可する。",
         },
@@ -392,8 +391,8 @@ export const EXAMPLE_QUERIES: string[] = [
     "MATCH (e:WriteEvent) RETURN e.id, e.statement, e.undoable, e.status",
     "MATCH (j:RenderJob) RETURN j.id, j.status, j.filePath",
     "MATCH (t:Transport) RETURN t.isPlaying, t.currentSongTime, t.tempo",
-    'CALL transport.seek(32)',
-    'CALL transport.play()',
-    'CALL transport.stop()',
+    "CALL transport.seek(32)",
+    "CALL transport.play()",
+    "CALL transport.stop()",
     'CALL render.cancel("render-abc")',
 ]
