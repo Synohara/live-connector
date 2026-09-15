@@ -65,6 +65,10 @@ const env_schema = z.object({
         .positive()
         .max(60_000)
         .default(DEFAULT_OSC_TIMEOUT_MS),
+    LIVE_CONNECTOR_CAPTURE_VALIDATION_LEVEL: z
+        .enum(["unverified", "integration-tested"])
+        .default("unverified"),
+    LIVE_CONNECTOR_CAPTURE_VALIDATION_ID: z.string().min(1).optional(),
     LIVE_CONNECTOR_PLAN_TTL_MS: z.coerce.number().int().positive().default(DEFAULT_PLAN_TTL_MS),
     LIVE_CONNECTOR_MAX_CAPTURE_BEATS: z.coerce
         .number()
