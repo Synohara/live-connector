@@ -12,6 +12,7 @@ const TYPE_FLOAT32 = "f"
 const TYPE_STRING = "s"
 const TYPE_TRUE = "T"
 const TYPE_FALSE = "F"
+const TYPE_NIL = "N"
 
 /** 4 バイト境界まで null パディングする。 */
 function padToBoundary(bytes: Buffer): Buffer {
@@ -28,6 +29,9 @@ function encodeOscString(value: string): Buffer {
 }
 
 function typeTagFor(value: OscArg): string {
+    if (value === null) {
+        return TYPE_NIL
+    }
     if (typeof value === "boolean") {
         return value ? TYPE_TRUE : TYPE_FALSE
     }
@@ -42,7 +46,7 @@ export function encodeOscMessage(message: OscMessage): Buffer {
     const tags = `,${message.args.map(typeTagFor).join("")}`
     const parts: Buffer[] = [encodeOscString(message.address), encodeOscString(tags)]
     for (const arg of message.args) {
-        if (typeof arg === "boolean") {
+        if (arg === null || typeof arg === "boolean") {
             continue
         }
         if (typeof arg === "number") {
@@ -96,6 +100,10 @@ export function decodeOscMessage(buffer: Buffer): OscMessage {
         }
         if (tag === TYPE_FALSE) {
             args.push(false)
+            continue
+        }
+        if (tag === TYPE_NIL) {
+            args.push(null)
             continue
         }
         if (tag === TYPE_INT32) {

@@ -168,7 +168,7 @@ export type CaptureTrackIdentity = {
 }
 
 /** OSC メッセージの引数。 */
-export type OscArg = string | number | boolean
+export type OscArg = string | number | boolean | null
 
 /** OSC 応答メッセージ。 */
 export type OscMessage = {
