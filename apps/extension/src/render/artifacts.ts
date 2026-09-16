@@ -10,6 +10,7 @@ import path from "node:path"
 import { HybridError } from "@live-connector/error"
 import type { ServerDeps } from "../deps"
 import type { AudioArtifact } from "../types/hybrid"
+import { artifactUrl, publishArtifact } from "./artifact-registry"
 
 const RENDERS_DIRECTORY_NAME = "renders"
 
@@ -204,6 +205,7 @@ export type FinalizeResult = {
     filePath: string
     audio: AudioArtifact
     warnings: string[]
+    artifactUrl?: string
 }
 
 /** 中間ファイルを検証し、artifact ディレクトリへ確定コピーする。 */
@@ -235,6 +237,8 @@ export async function finalizeArtifact(
     await rename(temp_path, final_path)
 
     const audio: AudioArtifact = { ...analysis.artifact, sha256 }
+    const token = publishArtifact(job_id, final_path)
+    const url = token !== null ? artifactUrl(job_id, token) : null
     await writeFile(
         path.join(directory, "manifest.json"),
         `${JSON.stringify(
@@ -250,7 +254,12 @@ export async function finalizeArtifact(
         )}\n`,
         "utf8",
     )
-    return { filePath: final_path, audio, warnings: analysis.warnings }
+    return {
+        filePath: final_path,
+        audio,
+        warnings: analysis.warnings,
+        ...(url !== null ? { artifactUrl: url } : {}),
+    }
 }
 
 /** storageDirectory が利用可能かを検査する。 */

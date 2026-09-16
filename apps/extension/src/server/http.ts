@@ -1,7 +1,10 @@
+import { createReadStream } from "node:fs"
+import { stat } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import type { Env } from "@live-connector/env"
 import {
     BadRequestError,
+    ForbiddenError,
     MethodNotAllowedError,
     NotFoundError,
     toProblemDetails,
@@ -14,6 +17,11 @@ import {
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import type { ServerDeps } from "../deps"
 import { collectSetFeatures, serializeSongHandle, structureDigest } from "../lom/fingerprint"
+import {
+    configureArtifactDelivery,
+    matchArtifactPath,
+    resolveArtifact,
+} from "../render/artifact-registry"
 import { SERVICE_VERSION } from "../version"
 import { createMcpServer, describeRegisteredTools } from "./mcp"
 
@@ -293,6 +301,54 @@ async function handleMcp(
     }
 }
 
+function handleArtifact(
+    context: RequestContext,
+    request: IncomingMessage,
+    response: ServerResponse,
+    job_id: string,
+    token: string,
+): void {
+    if (request.method !== "GET") {
+        writeProblem(
+            response,
+            new MethodNotAllowedError(`Method ${request.method ?? "UNKNOWN"} is not allowed`),
+        )
+        return
+    }
+    try {
+        assertLocalRequestHeaders(request, context.env)
+    } catch (error) {
+        writeProblem(response, error)
+        return
+    }
+    const resolution = resolveArtifact(job_id, token)
+    if (resolution.kind === "not_found") {
+        writeProblem(response, new NotFoundError(`Artifact "${job_id}" was not found or expired`))
+        return
+    }
+    if (resolution.kind === "forbidden") {
+        writeProblem(response, new ForbiddenError("Artifact token is invalid"))
+        return
+    }
+    const file_path = resolution.filePath
+    void stat(file_path)
+        .then((info) => {
+            if (!info.isFile()) {
+                writeProblem(response, new NotFoundError(`Artifact "${job_id}" file is missing`))
+                return
+            }
+            response.writeHead(200, {
+                "content-type": resolution.contentType,
+                "content-length": String(info.size),
+                "cache-control": "no-store",
+            })
+            createReadStream(file_path).pipe(response)
+        })
+        .catch(() => {
+            writeProblem(response, new NotFoundError(`Artifact "${job_id}" file is missing`))
+        })
+}
+
 async function routeRequest(
     context: RequestContext,
     request: IncomingMessage,
@@ -307,6 +363,11 @@ async function routeRequest(
         await handleMcp(context, request, response)
         return
     }
+    const artifact = matchArtifactPath(path)
+    if (artifact !== null) {
+        handleArtifact(context, request, response, artifact.jobId, artifact.token)
+        return
+    }
     writeProblem(response, new NotFoundError(`Path "${path}" was not found`))
 }
 
@@ -318,6 +379,13 @@ async function routeRequest(
  */
 export function startMcpHttpServer(args: StartArgs): Promise<ServerInfo> {
     const context: RequestContext = { deps: args.deps, env: args.env, log: args.log }
+
+    configureArtifactDelivery({
+        enabled: args.env.LIVE_CONNECTOR_ARTIFACT_DELIVERY_ENABLED,
+        ttlMs: args.env.LIVE_CONNECTOR_ARTIFACT_TOKEN_TTL_MS,
+        host: args.env.LIVE_CONNECTOR_MCP_HOST,
+        port: args.env.LIVE_CONNECTOR_MCP_PORT,
+    })
 
     const server = createServer((request, response) => {
         void routeRequest(context, request, response).catch((error: unknown) => {
@@ -351,6 +419,13 @@ export function startMcpHttpServer(args: StartArgs): Promise<ServerInfo> {
                 port,
                 mcpPath: MCP_PATH,
             }
+            // 実際に bind した port で artifact URL を組み立てる。
+            configureArtifactDelivery({
+                enabled: args.env.LIVE_CONNECTOR_ARTIFACT_DELIVERY_ENABLED,
+                ttlMs: args.env.LIVE_CONNECTOR_ARTIFACT_TOKEN_TTL_MS,
+                host: args.env.LIVE_CONNECTOR_MCP_HOST,
+                port,
+            })
             args.log.info("MCP HTTP server listening", server_info)
             resolve(server_info)
         })

@@ -7,6 +7,7 @@ import type { ServerDeps, TargetApiVersion } from "../deps"
 import type { LomNode } from "../lom/adapter"
 import { createAdapterFromDeps } from "../lom/create-adapter"
 import { serializeSongHandle } from "../lom/fingerprint"
+import { artifactUrl, publishArtifact } from "../render/artifact-registry"
 import {
     countRunningRenderJobs,
     findRenderJobByRequest,
@@ -153,11 +154,14 @@ async function runPreFxRender(
         deps.context.resources
             .renderPreFxAudio(track, params.startTime, params.endTime)
             .then((file_path) => {
+                const token = publishArtifact(job_id, file_path)
+                const url = token !== null ? artifactUrl(job_id, token) : null
                 updateRenderJob(job_id, {
                     status: "done",
                     phase: "completed",
                     filePath: file_path,
                     audioStatus: "ready",
+                    ...(url !== null ? { artifactUrl: url } : {}),
                 })
             })
             .catch((error: unknown) => {
@@ -187,9 +191,13 @@ async function runPreFxRender(
         params.startTime,
         params.endTime,
     )
+    const sync_id = `render-sync-${Date.now().toString(36)}`
+    const token = publishArtifact(sync_id, file_path)
+    const url = token !== null ? artifactUrl(sync_id, token) : null
     return {
         status: "ok",
         filePath: file_path,
+        ...(url !== null ? { artifactUrl: url } : {}),
         source: "audio-track-pre-fx",
         method: "sdk-pre-fx",
         startTime: params.startTime,

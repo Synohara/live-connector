@@ -1,16 +1,22 @@
 /**
  * Shared Hybrid Runtime。activation 単位の singleton として生成し、
- * OSC 接続・Transport / routing adapter・lock・resolver を保持する。
+ * OSC 接続・Transport / routing adapter・lock・resolver・companion を保持する。
  * HTTP リクエスト単位や MCP セッション単位で socket を bind しない。
  */
 
 import type { Env } from "@live-connector/env"
 import { HybridError } from "@live-connector/error"
 import type { Logger } from "@live-connector/log"
+import {
+    CompanionClient,
+    type CompanionTransport,
+    createTcpCompanionTransport,
+} from "../companion/client"
+import type { CompanionStatus } from "../companion/protocol"
 import { createDgramTransport, OscClient, type OscDatagramTransport } from "../osc/client"
 import { OscRoutingAdapter } from "../osc/routing"
 import { OscTransportAdapter } from "../osc/transport"
-import type { CaptureValidationLevel, OscSettings } from "../types/hybrid"
+import type { CaptureValidationLevel, CompanionSettings, OscSettings } from "../types/hybrid"
 import {
     buildRenderCapabilities,
     buildRuntimeCapabilities,
@@ -20,9 +26,10 @@ import {
 import { RuntimeLocks } from "./locks"
 import { CaptureResolver } from "./resolver"
 
-/** OSC トランスポートの生成を差し替えるためのフック（テスト用）。 */
+/** OSC / companion トランスポートの生成を差し替えるためのフック（テスト用）。 */
 export type RuntimeOptions = {
     transportFactory?: (settings: OscSettings, log: Logger) => OscDatagramTransport
+    companionTransportFactory?: (settings: CompanionSettings, log: Logger) => CompanionTransport
 }
 
 /** ハンドシェイク結果をキャッシュする時間。 */
@@ -31,6 +38,7 @@ const OSC_PROBE_TTL_MS = 5_000
 /** activation 単位で共有する Hybrid Runtime。 */
 export class HybridRuntime {
     readonly settings: OscSettings
+    readonly companionSettings: CompanionSettings
     readonly locks: RuntimeLocks
 
     private readonly log: Logger
@@ -43,6 +51,10 @@ export class HybridRuntime {
     private osc_error: string | undefined
     private osc_connected = false
     private last_probe_at = 0
+    private companion_client: CompanionClient | null = null
+    private companion_status: CompanionStatus | null = null
+    private companion_error: string | undefined
+    private companion_connected = false
     private started = false
 
     constructor(env: Env, log: Logger, options: RuntimeOptions = {}) {
@@ -57,17 +69,30 @@ export class HybridRuntime {
             replyPort: env.LIVE_CONNECTOR_OSC_REPLY_PORT,
             timeoutMs: env.LIVE_CONNECTOR_OSC_TIMEOUT_MS,
         }
+        this.companionSettings = {
+            enabled: env.LIVE_CONNECTOR_COMPANION_ENABLED,
+            host: env.LIVE_CONNECTOR_COMPANION_HOST,
+            port: env.LIVE_CONNECTOR_COMPANION_PORT,
+            heartbeatMs: env.LIVE_CONNECTOR_COMPANION_HEARTBEAT_MS,
+            timeoutMs: env.LIVE_CONNECTOR_COMPANION_TIMEOUT_MS,
+            staleMs: env.LIVE_CONNECTOR_COMPANION_STALE_MS,
+        }
     }
 
     /**
-     * OSC を起動する。OSC 無効・接続失敗でも例外を投げず、capabilities へ理由を残す。
-     * 従来の SDK 機能は OSC 未接続でも動作する。
+     * OSC と companion を起動する。どちらも接続失敗で例外を投げず、capabilities へ理由を残す。
+     * 従来の SDK 機能は未接続でも動作する。
      */
     async start(): Promise<void> {
         if (this.started) {
             return
         }
         this.started = true
+        await this.startOsc()
+        await this.startCompanion()
+    }
+
+    private async startOsc(): Promise<void> {
         if (!this.settings.enabled) {
             this.osc_error = "AbletonOSC integration is disabled by configuration"
             return
@@ -105,6 +130,43 @@ export class HybridRuntime {
         }
     }
 
+    private async startCompanion(): Promise<void> {
+        if (!this.companionSettings.enabled) {
+            this.companion_error = "companion integration is disabled by configuration"
+            return
+        }
+        try {
+            const transport =
+                this.options.companionTransportFactory?.(this.companionSettings, this.log) ??
+                createTcpCompanionTransport(
+                    this.companionSettings.host,
+                    this.companionSettings.port,
+                    this.log,
+                )
+            const client = new CompanionClient(transport, {
+                timeoutMs: this.companionSettings.timeoutMs,
+            })
+            await client.start()
+            const status = await client.status()
+            this.companion_client = client
+            this.companion_status = status
+            this.companion_connected = true
+            this.companion_error = undefined
+            this.log.info("companion connected", {
+                version: status.version,
+                setEpoch: status.setEpoch,
+            })
+        } catch (error) {
+            this.companion_error = error instanceof Error ? error.message : String(error)
+            this.log.warn("companion unavailable; unattended safety features are off", {
+                error: this.companion_error,
+            })
+            this.companion_client = null
+            this.companion_status = null
+            this.companion_connected = false
+        }
+    }
+
     /**
      * AbletonOSC が応答するかを確認する。結果は短時間キャッシュする。
      * ソケットが bind できても AbletonOSC が無応答なら connected にしない。
@@ -137,11 +199,17 @@ export class HybridRuntime {
         if (this.client !== null) {
             await this.client.stop()
         }
+        if (this.companion_client !== null) {
+            await this.companion_client.close()
+        }
         this.client = null
         this.transport_adapter = null
         this.routing_adapter = null
         this.capture_resolver = null
+        this.companion_client = null
+        this.companion_status = null
         this.osc_connected = false
+        this.companion_connected = false
         this.started = false
     }
 
@@ -155,6 +223,41 @@ export class HybridRuntime {
 
     oscReason(): string | undefined {
         return this.osc_error
+    }
+
+    companionEnabled(): boolean {
+        return this.companionSettings.enabled
+    }
+
+    companionConnected(): boolean {
+        return this.companion_connected
+    }
+
+    companionReason(): string | undefined {
+        return this.companion_error
+    }
+
+    companionSetEpoch(): string | undefined {
+        return this.companion_status?.setEpoch
+    }
+
+    companionHeartbeatMs(): number {
+        return this.companionSettings.heartbeatMs
+    }
+
+    companionStaleMs(): number {
+        return this.companionSettings.staleMs
+    }
+
+    /** companion クライアントを返す。未接続なら COMPANION_UNAVAILABLE。 */
+    requireCompanion(): CompanionClient {
+        if (!this.companion_connected || this.companion_client === null) {
+            throw new HybridError(
+                "COMPANION_UNAVAILABLE",
+                this.companion_error ?? "companion is not connected",
+            )
+        }
+        return this.companion_client
     }
 
     validationLevel(): CaptureValidationLevel {
@@ -215,6 +318,9 @@ export class HybridRuntime {
             maxArtifactBytes: this.maxArtifactBytes(),
             validationLevel: this.validationLevel(),
             validationId: this.env.LIVE_CONNECTOR_CAPTURE_VALIDATION_ID,
+            companionConnected: this.companionConnected(),
+            companionReason: this.companion_error,
+            companionSetEpoch: this.companionSetEpoch(),
         }
         return {
             render: buildRenderCapabilities(input),

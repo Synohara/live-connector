@@ -21,6 +21,12 @@ const DEFAULT_OSC_TIMEOUT_MS = 1500
 const DEFAULT_PLAN_TTL_MS = 60_000
 const DEFAULT_MAX_CAPTURE_BEATS = 2048
 const DEFAULT_MAX_ARTIFACT_BYTES = 536_870_912
+const DEFAULT_COMPANION_HOST = "127.0.0.1"
+const DEFAULT_COMPANION_PORT = 11002
+const DEFAULT_COMPANION_HEARTBEAT_MS = 1000
+const DEFAULT_COMPANION_TIMEOUT_MS = 2000
+const DEFAULT_COMPANION_STALE_MS = 10_000
+const DEFAULT_ARTIFACT_TOKEN_TTL_MS = 3_600_000
 
 function normalizeHost(host: string): string {
     const normalized_host = host.trim().toLowerCase()
@@ -80,6 +86,38 @@ const env_schema = z.object({
         .int()
         .positive()
         .default(DEFAULT_MAX_ARTIFACT_BYTES),
+    LIVE_CONNECTOR_COMPANION_ENABLED: boolean_env.default(false),
+    LIVE_CONNECTOR_COMPANION_HOST: loopback_host.default(DEFAULT_COMPANION_HOST),
+    LIVE_CONNECTOR_COMPANION_PORT: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(65535)
+        .default(DEFAULT_COMPANION_PORT),
+    LIVE_CONNECTOR_COMPANION_HEARTBEAT_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(60_000)
+        .default(DEFAULT_COMPANION_HEARTBEAT_MS),
+    LIVE_CONNECTOR_COMPANION_TIMEOUT_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(60_000)
+        .default(DEFAULT_COMPANION_TIMEOUT_MS),
+    LIVE_CONNECTOR_COMPANION_STALE_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(120_000)
+        .default(DEFAULT_COMPANION_STALE_MS),
+    LIVE_CONNECTOR_ARTIFACT_DELIVERY_ENABLED: boolean_env.default(true),
+    LIVE_CONNECTOR_ARTIFACT_TOKEN_TTL_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_ARTIFACT_TOKEN_TTL_MS),
 })
 
 export type Env = z.infer<typeof env_schema>

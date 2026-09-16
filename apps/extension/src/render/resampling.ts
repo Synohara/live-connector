@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto"
 import type { AudioTrack, Song } from "@ableton-extensions/sdk"
 import { HybridError } from "@live-connector/error"
+import { trackNameEpoch } from "../companion/epoch"
 import type { ServerDeps, TargetApiVersion } from "../deps"
 import { findResamplingCandidate, MONITOR_STATE_OFF } from "../osc/protocol"
 import type { OscRoutingAdapter } from "../osc/routing"
@@ -179,7 +180,10 @@ class MainCaptureJob {
     private warnings: string[] = []
     private unrecovered: string[] = []
     private file_path: string | undefined
+    private artifact_url: string | undefined
     private audio: AudioArtifact | undefined
+    private heartbeat_timer: NodeJS.Timeout | null = null
+    private companion_active = false
 
     constructor(deps: ServerDeps, job_id: string, params: MainCaptureParams, set_id: string) {
         this.deps = deps
@@ -331,6 +335,7 @@ class MainCaptureJob {
                 audioStatus: audio_status,
                 cleanupStatus: cleanup_status,
                 ...(this.file_path !== undefined ? { filePath: this.file_path } : {}),
+                ...(this.artifact_url !== undefined ? { artifactUrl: this.artifact_url } : {}),
                 ...(this.audio !== undefined ? { audio: this.audio } : {}),
                 ...(error_message !== undefined ? { error: error_message } : {}),
                 warnings: [...this.warnings],
@@ -364,6 +369,7 @@ class MainCaptureJob {
         // SDK のトラック作成・改名は Live へ非同期に反映される。OSC 側に現れるまで期限付きで待つ。
         const osc_index = await this.waitForPairing()
         this.osc_index = osc_index
+        await this.verifyWithCompanion(osc_index)
 
         if (created.devices.length > 0) {
             throw new HybridError(
@@ -389,6 +395,87 @@ class MainCaptureJob {
         await this.configureRouting(osc_index, created)
         await this.routing.setArm(osc_index, true)
         this.recordApplied("arm", true)
+        await this.enableCompanionWatch()
+    }
+
+    /** companion が接続されている場合、対象トラックと同一 Set を検証する。 */
+    private async verifyWithCompanion(osc_index: number): Promise<void> {
+        if (!this.deps.runtime.companionConnected()) {
+            return
+        }
+        const companion = this.deps.runtime.requireCompanion()
+        const local_epoch = trackNameEpoch(
+            this.deps.context.application.song.tracks.map((track) => track.name),
+        )
+        const companion_epoch = this.deps.runtime.companionSetEpoch()
+        if (companion_epoch !== undefined && companion_epoch !== local_epoch) {
+            throw new HybridError(
+                "COMPANION_SET_MISMATCH",
+                `companion is attached to a different Set (${companion_epoch} != ${local_epoch})`,
+            )
+        }
+        const verification = await companion.verifyTrack(this.unique_name, osc_index)
+        if (!verification.matched) {
+            throw new HybridError(
+                "COMPANION_SET_MISMATCH",
+                `companion could not verify capture track "${this.unique_name}" at index ${osc_index}`,
+            )
+        }
+    }
+
+    /** companion の safety watcher を有効化し、heartbeat 送出を開始する。 */
+    private async enableCompanionWatch(): Promise<void> {
+        if (!this.deps.runtime.companionConnected()) {
+            return
+        }
+        await this.deps.runtime.requireCompanion().watch({
+            enabled: true,
+            deadlineMs: this.deps.runtime.companionStaleMs(),
+            captureTrackName: this.unique_name,
+            maxCaptureBeats: this.params.endTime - this.params.startTime,
+            startBeat: this.params.startTime,
+            endBeat: this.params.endTime,
+        })
+        this.companion_active = true
+        const interval = this.deps.runtime.companionHeartbeatMs()
+        this.heartbeat_timer = setInterval(() => {
+            if (!this.deps.runtime.companionConnected()) {
+                return
+            }
+            void this.deps.runtime
+                .requireCompanion()
+                .heartbeat()
+                .catch((error: unknown) => {
+                    this.deps.log.warn("companion heartbeat failed", { error: String(error) })
+                })
+        }, interval)
+    }
+
+    /** companion の watcher を無効化し、heartbeat を停止する。 */
+    private async stopCompanionWatch(): Promise<void> {
+        if (this.heartbeat_timer !== null) {
+            clearInterval(this.heartbeat_timer)
+            this.heartbeat_timer = null
+        }
+        if (!this.companion_active) {
+            return
+        }
+        this.companion_active = false
+        if (!this.deps.runtime.companionConnected()) {
+            return
+        }
+        try {
+            await this.deps.runtime.requireCompanion().watch({
+                enabled: false,
+                deadlineMs: 0,
+                captureTrackName: this.unique_name,
+                maxCaptureBeats: 0,
+                startBeat: 0,
+                endBeat: 0,
+            })
+        } catch (error) {
+            this.deps.log.warn("companion watch disable failed", { error: String(error) })
+        }
     }
 
     /** SDK で作成・改名した一時トラックが OSC 側へ反映されるまで待って index を解決する。 */
@@ -606,6 +693,7 @@ class MainCaptureJob {
             this.deps.runtime.maxArtifactBytes(),
         )
         this.file_path = result.filePath
+        this.artifact_url = result.artifactUrl
         this.audio = result.audio
         this.warnings.push(...result.warnings)
     }
@@ -638,6 +726,7 @@ class MainCaptureJob {
 
     private async cleanup(): Promise<void> {
         await this.phaseSafe("restoring")
+        await this.stopCompanionWatch()
         try {
             this.transport.stop()
         } catch (error) {

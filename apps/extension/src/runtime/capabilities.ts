@@ -14,6 +14,9 @@ export type CapabilitiesInput = {
     maxArtifactBytes: number
     validationLevel: CaptureValidationLevel
     validationId: string | undefined
+    companionConnected: boolean
+    companionReason: string | undefined
+    companionSetEpoch: string | undefined
 }
 
 /** `render.mainOutput` の能力記述。 */
@@ -43,6 +46,13 @@ export type RuntimeCapabilities = {
     maxArtifactBytes: number
     validationLevel: CaptureValidationLevel
     validationId?: string
+    companion: {
+        connected: boolean
+        reason?: string
+        setEpoch?: string
+        safety: "heartbeat-and-target-verification"
+    }
+    artifacts: { delivery: boolean; pathPrefix: string }
 }
 
 export function buildRenderCapabilities(input: CapabilitiesInput): RenderCapabilities {
@@ -70,6 +80,15 @@ export function buildRuntimeCapabilities(input: CapabilitiesInput): RuntimeCapab
     if (!input.oscConnected) {
         osc.reason = input.oscReason ?? "AbletonOSC is not connected"
     }
+    const companion: RuntimeCapabilities["companion"] = {
+        connected: input.companionConnected,
+        safety: "heartbeat-and-target-verification",
+    }
+    if (!input.companionConnected) {
+        companion.reason = input.companionReason ?? "companion is not connected"
+    } else if (input.companionSetEpoch !== undefined) {
+        companion.setEpoch = input.companionSetEpoch
+    }
     return {
         osc,
         capturePairing: "verified-on-job-start",
@@ -78,5 +97,7 @@ export function buildRuntimeCapabilities(input: CapabilitiesInput): RuntimeCapab
         maxArtifactBytes: input.maxArtifactBytes,
         validationLevel: input.validationLevel,
         ...(input.validationId !== undefined ? { validationId: input.validationId } : {}),
+        companion,
+        artifacts: { delivery: true, pathPrefix: "/api/v1/artifacts" },
     }
 }
