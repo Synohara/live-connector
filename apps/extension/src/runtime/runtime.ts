@@ -173,6 +173,18 @@ export class HybridRuntime {
         return this.env.LIVE_CONNECTOR_PLAN_TTL_MS
     }
 
+    gainstageMeasureBeats(): number {
+        return this.env.LIVE_CONNECTOR_GAINSTAGE_MEASURE_BEATS
+    }
+
+    gainstageMaxIterations(): number {
+        return this.env.LIVE_CONNECTOR_GAINSTAGE_MAX_ITERATIONS
+    }
+
+    gainstageToleranceDb(): number {
+        return this.env.LIVE_CONNECTOR_GAINSTAGE_TOLERANCE_DB
+    }
+
     /** Transport adapter を返す。未接続なら OSC_UNAVAILABLE。 */
     requireTransport(): OscTransportAdapter {
         if (!this.osc_connected || this.transport_adapter === null) {
@@ -215,6 +227,9 @@ export class HybridRuntime {
             maxArtifactBytes: this.maxArtifactBytes(),
             validationLevel: this.validationLevel(),
             validationId: this.env.LIVE_CONNECTOR_CAPTURE_VALIDATION_ID,
+            gainstageMeasureBeats: this.gainstageMeasureBeats(),
+            gainstageMaxIterations: this.gainstageMaxIterations(),
+            gainstageToleranceDb: this.gainstageToleranceDb(),
         }
         return {
             render: buildRenderCapabilities(input),

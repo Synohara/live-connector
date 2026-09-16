@@ -9,6 +9,7 @@ import type { ServerDeps } from "../../deps"
 import { getRenderJob } from "../../render/jobs"
 import { requestCaptureCancel } from "../../render/resampling"
 import { validateProcedureCall } from "../../runtime/procedures"
+import { executeGainstage } from "./gainstage"
 
 const RUNTIME_VERIFY_TIMEOUT_MS = 2_000
 
@@ -61,6 +62,10 @@ async function executeProcedure(
     statement: CallStatement,
 ): Promise<Record<string, unknown>> {
     const locks = deps.runtime.locks
+    if (statement.procedure.startsWith("gainstage.")) {
+        locks.assertTransportFree(statement.procedure)
+        return executeGainstage(deps, statement.procedure, statement.args)
+    }
     switch (statement.procedure) {
         case "transport.play": {
             locks.assertTransportFree("transport.play")

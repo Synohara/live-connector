@@ -48,6 +48,34 @@ export const ALLOWED_PROCEDURES: readonly ProcedureSpec[] = [
         undoable: "none",
         requires_confirm: true,
     },
+    {
+        name: "gainstage.measure",
+        arg_types: ["string", "number"],
+        effect: "runtime",
+        undoable: "none",
+        requires_confirm: true,
+    },
+    {
+        name: "gainstage.track",
+        arg_types: ["string", "number"],
+        effect: "runtime",
+        undoable: "none",
+        requires_confirm: true,
+    },
+    {
+        name: "gainstage.device",
+        arg_types: ["string", "string", "number"],
+        effect: "runtime",
+        undoable: "none",
+        requires_confirm: true,
+    },
+    {
+        name: "gainstage.main",
+        arg_types: ["string", "number", "number"],
+        effect: "runtime",
+        undoable: "none",
+        requires_confirm: true,
+    },
 ]
 
 export function findAllowedProcedures(): ProcedureSpec[] {

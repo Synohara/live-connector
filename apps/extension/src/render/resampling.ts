@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto"
 import type { AudioTrack, Song } from "@ableton-extensions/sdk"
 import { HybridError } from "@live-connector/error"
 import type { ServerDeps, TargetApiVersion } from "../deps"
+import { serializeSongHandle } from "../lom/fingerprint"
 import { findResamplingCandidate, MONITOR_STATE_OFF } from "../osc/protocol"
 import type { OscRoutingAdapter } from "../osc/routing"
 import type { OscTransportAdapter, TransportState } from "../osc/transport"
@@ -24,7 +25,7 @@ import type {
 } from "../types/hybrid"
 import { assertArtifactStorage, finalizeArtifact } from "./artifacts"
 import { restoreTransport } from "./capture-state"
-import { nextRenderJobId, setRenderJob, updateRenderJob } from "./jobs"
+import { getRenderJob, nextRenderJobId, setRenderJob, updateRenderJob } from "./jobs"
 import { writeJournal } from "./journal"
 
 type V = TargetApiVersion
@@ -119,6 +120,35 @@ export function requestCaptureCancel(job_id: string): boolean {
     }
     capture.cancel()
     return true
+}
+
+/** ゲインステージング用: Main 録音を 1 回実行し、終端まで待って結果を返す。 */
+export async function captureMainSync(deps: ServerDeps, beats: number): Promise<RenderJobRecord> {
+    const set_id = serializeSongHandle(deps.context.application.song.handle)
+    const { job } = startMainCapture(
+        deps,
+        {
+            startTime: 0,
+            endTime: beats,
+            preRollBeats: 0,
+            keepCaptureTrack: false,
+            planId: "gainstage",
+            requestId: `gainstage-${Date.now().toString(36)}`,
+        },
+        set_id,
+    )
+    const deadline = Date.now() + 30_000 + beats * 2_000
+    for (;;) {
+        const current = getRenderJob(job.id)
+        if (current === undefined || current.status !== "running") {
+            return current ?? job
+        }
+        if (Date.now() > deadline) {
+            requestCaptureCancel(job.id)
+            throw new HybridError("OSC_WRITE_UNCERTAIN", "Main capture for gain staging timed out")
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200))
+    }
 }
 
 /** Main 録音ジョブを生成し、バックグラウンド実行を開始する。 */
