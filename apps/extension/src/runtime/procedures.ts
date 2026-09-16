@@ -70,6 +70,13 @@ export const ALLOWED_PROCEDURES: readonly ProcedureSpec[] = [
         requires_confirm: true,
     },
     {
+        name: "gainstage.chain",
+        arg_types: ["string", "number", "string"],
+        effect: "runtime",
+        undoable: "none",
+        requires_confirm: true,
+    },
+    {
         name: "gainstage.main",
         arg_types: ["string", "number", "number"],
         effect: "runtime",

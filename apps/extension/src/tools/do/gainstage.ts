@@ -482,6 +482,113 @@ export async function executeGainstage(
         }
     }
 
+    if (procedure === "gainstage.chain") {
+        const track_name = String(args[0] ?? "")
+        const target_db = Number(args[1] ?? 0)
+        const metric_arg = String(args[2] ?? "auto").toLowerCase()
+        if (metric_arg !== "vu" && metric_arg !== "peak" && metric_arg !== "auto") {
+            throw new NotFoundError(
+                `gainstage.chain metric must be "vu", "peak" or "auto", received "${metric_arg}"`,
+            )
+        }
+        const routing = deps.runtime.requireRouting()
+        const index = await findTrackIndex(routing, track_name)
+        const track = findTrackByName(deps, track_name)
+        const devices = track.devices
+        if (devices.length === 0) {
+            throw new NotFoundError(`Track "${track_name}" has no devices`)
+        }
+        // 段の分離に Device On を使う。無いデバイスが1つでもあれば分離不可。
+        const on_parameters = devices.map((device) =>
+            device.parameters.find((candidate) => candidate.name.toLowerCase() === "device on"),
+        )
+        if (on_parameters.some((parameter) => parameter === undefined)) {
+            throw new HybridError(
+                "GAINSTAGE_NOT_CONVERGED",
+                "gainstage.chain requires a 'Device On' parameter on every device to isolate stages",
+            )
+        }
+        const handles = on_parameters as NonNullable<(typeof on_parameters)[number]>[]
+        const original_on: number[] = []
+        for (const handle of handles) {
+            original_on.push(await handle.getValue())
+        }
+        const measure = () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats())
+        const stages: Record<string, unknown>[] = []
+        try {
+            for (let stage = 0; stage < devices.length; stage++) {
+                const device = devices[stage]
+                if (device === undefined) {
+                    continue
+                }
+                for (let j = 0; j < handles.length; j++) {
+                    await handles[j]?.setValue(j <= stage ? 1 : 0)
+                }
+                const gain = findGainParameter(device, device.name)
+                let metric: "rmsDbfs" | "peakDbfs" = "rmsDbfs"
+                let metric_label = "vu"
+                let effective_target = target_db
+                if (metric_arg === "peak") {
+                    metric = "peakDbfs"
+                    metric_label = "peak"
+                } else if (metric_arg === "auto") {
+                    const levels = await measure()
+                    const crest =
+                        levels.peakDbfs !== null && levels.rmsDbfs !== null
+                            ? levels.peakDbfs - levels.rmsDbfs
+                            : 0
+                    if (crest > AUTO_CREST_THRESHOLD_DB) {
+                        metric = "peakDbfs"
+                        metric_label = "peak"
+                        effective_target = target_db + AUTO_PEAK_OFFSET_DB
+                    }
+                }
+                const result = await convergeBisection(
+                    deps,
+                    {
+                        label: `${device.name}.${gain.name}`,
+                        min: gain.min,
+                        max: gain.max,
+                        getValue: () => gain.getValue(),
+                        setValue: (value) => gain.setValue(value),
+                    },
+                    measure,
+                    effective_target,
+                    metric,
+                    `${device.name}.${gain.name} did not measurably change the stage level; the value was restored.`,
+                )
+                stages.push({
+                    device: device.name,
+                    param: gain.name,
+                    metricMode: metric_label,
+                    ...convergenceResponse(
+                        "gainstage.chain",
+                        metric_label,
+                        effective_target,
+                        result,
+                    ),
+                })
+            }
+        } finally {
+            for (let j = 0; j < handles.length; j++) {
+                try {
+                    await handles[j]?.setValue(original_on[j] ?? 1)
+                } catch (error) {
+                    deps.log.warn("chain Device On restore failed", { error: String(error) })
+                }
+            }
+        }
+        return {
+            status: "ok",
+            operation: "gainstage.chain",
+            effect: "runtime",
+            undoable: "none",
+            trackName: track_name,
+            targetDb: target_db,
+            stages,
+        }
+    }
+
     throw new NotFoundError(`Procedure "${procedure}" is not implemented`)
 }
 
