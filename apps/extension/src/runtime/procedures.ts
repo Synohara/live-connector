@@ -64,7 +64,7 @@ export const ALLOWED_PROCEDURES: readonly ProcedureSpec[] = [
     },
     {
         name: "gainstage.device",
-        arg_types: ["string", "string", "number"],
+        arg_types: ["string", "string", "number", "string", "string"],
         effect: "runtime",
         undoable: "none",
         requires_confirm: true,

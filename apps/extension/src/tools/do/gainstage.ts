@@ -273,9 +273,25 @@ function findDevice(track: Track<V>, device_name: string): Device<V> {
     return device
 }
 
-function findGainParameter(device: Device<V>, device_name: string) {
-    const preferred = ["Output", "Gain", "Volume"]
-    for (const name of preferred) {
+const GAIN_PARAMETER_NAMES = ["Drive", "Input", "Input Gain", "In", "Gain", "Output", "Volume"]
+
+/** デバイスのゲイン系パラメータを解決する。explicit 指定が無ければ候補名で探す。 */
+function findGainParameter(device: Device<V>, device_name: string, explicit_name?: string) {
+    if (explicit_name !== undefined && explicit_name.length > 0) {
+        const named = device.parameters.find(
+            (candidate) => candidate.name.toLowerCase() === explicit_name.toLowerCase(),
+        )
+        if (named === undefined) {
+            throw new NotFoundError(
+                `Device "${device_name}" has no parameter named "${explicit_name}"`,
+                {
+                    hint: `Available parameters: ${device.parameters.map((p) => p.name).join(", ")}`,
+                },
+            )
+        }
+        return named
+    }
+    for (const name of GAIN_PARAMETER_NAMES) {
         const parameter = device.parameters.find(
             (candidate) => candidate.name.toLowerCase() === name.toLowerCase(),
         )
@@ -283,11 +299,10 @@ function findGainParameter(device: Device<V>, device_name: string) {
             return parameter
         }
     }
-    throw new NotFoundError(`Device "${device_name}" has no Output/Gain/Volume parameter`, {
-        hint: `Available parameters: ${device.parameters
-            .map((candidate) => candidate.name)
-            .join(", ")}`,
-    })
+    throw new NotFoundError(
+        `Device "${device_name}" has no gain-like parameter (tried ${GAIN_PARAMETER_NAMES.join(", ")})`,
+        { hint: `Available parameters: ${device.parameters.map((p) => p.name).join(", ")}` },
+    )
 }
 
 function findTrackByName(deps: ServerDeps, track_name: string): Track<V> {
@@ -383,11 +398,38 @@ export async function executeGainstage(
         const track_name = String(args[0] ?? "")
         const device_name = String(args[1] ?? "")
         const target_db = Number(args[2] ?? 0)
+        const metric_arg = String(args[3] ?? "auto").toLowerCase()
+        const param_arg = String(args[4] ?? "")
+        if (metric_arg !== "vu" && metric_arg !== "peak" && metric_arg !== "auto") {
+            throw new NotFoundError(
+                `gainstage.device metric must be "vu", "peak" or "auto", received "${metric_arg}"`,
+            )
+        }
         const routing = deps.runtime.requireRouting()
         const index = await findTrackIndex(routing, track_name)
         const track = findTrackByName(deps, track_name)
         const device = findDevice(track, device_name)
-        const parameter = findGainParameter(device, device_name)
+        const parameter = findGainParameter(device, device_name, param_arg)
+        const measure = () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats())
+
+        let metric: "rmsDbfs" | "peakDbfs" = "rmsDbfs"
+        let metric_label = "vu"
+        let effective_target = target_db
+        if (metric_arg === "peak") {
+            metric = "peakDbfs"
+            metric_label = "peak"
+        } else if (metric_arg === "auto") {
+            const levels = await measure()
+            const crest =
+                levels.peakDbfs !== null && levels.rmsDbfs !== null
+                    ? levels.peakDbfs - levels.rmsDbfs
+                    : 0
+            if (crest > AUTO_CREST_THRESHOLD_DB) {
+                metric = "peakDbfs"
+                metric_label = "peak"
+                effective_target = target_db + AUTO_PEAK_OFFSET_DB
+            }
+        }
         const result = await convergeBisection(
             deps,
             {
@@ -397,12 +439,15 @@ export async function executeGainstage(
                 getValue: () => parameter.getValue(),
                 setValue: (value) => parameter.setValue(value),
             },
-            () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats()),
-            target_db,
-            "rmsDbfs",
-            `${device_name}.${parameter.name} did not measurably change the level; on devices with Dry/Wet the dry signal bypasses the Output gain. Use the track volume, or set Dry/Wet explicitly (this changes the sound). The value was restored.`,
+            measure,
+            effective_target,
+            metric,
+            `${device_name}.${parameter.name} did not measurably change the level; on devices with Dry/Wet the dry signal bypasses the Output gain. The value was restored.`,
         )
-        return convergenceResponse(procedure, "vu", target_db, result)
+        return {
+            ...convergenceResponse(procedure, metric_label, effective_target, result),
+            metricMode: metric_label,
+        }
     }
 
     if (procedure === "gainstage.main") {
