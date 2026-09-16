@@ -57,7 +57,7 @@ export const ALLOWED_PROCEDURES: readonly ProcedureSpec[] = [
     },
     {
         name: "gainstage.track",
-        arg_types: ["string", "number"],
+        arg_types: ["string", "number", "string"],
         effect: "runtime",
         undoable: "none",
         requires_confirm: true,

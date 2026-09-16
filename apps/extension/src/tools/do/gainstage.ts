@@ -21,6 +21,8 @@ const PLAY_TIMEOUT_MS = 10_000
 const MEASURE_OVERHEAD_MS = 5_000
 const MIN_PARAMETER_STEP = 1e-4
 const WRITE_TOLERANCE = 0.01
+const AUTO_CREST_THRESHOLD_DB = 12
+const AUTO_PEAK_OFFSET_DB = 12
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
@@ -327,10 +329,37 @@ export async function executeGainstage(
     if (procedure === "gainstage.track") {
         const track_name = String(args[0] ?? "")
         const target_db = Number(args[1] ?? 0)
+        const metric_arg = String(args[2] ?? "auto").toLowerCase()
+        if (metric_arg !== "vu" && metric_arg !== "peak" && metric_arg !== "auto") {
+            throw new NotFoundError(
+                `gainstage.track metric must be "vu", "peak" or "auto", received "${metric_arg}"`,
+            )
+        }
         const routing = deps.runtime.requireRouting()
         const index = await findTrackIndex(routing, track_name)
         const track = findTrackByName(deps, track_name)
         const volume = track.mixer.volume
+        const measure = () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats())
+
+        let metric: "rmsDbfs" | "peakDbfs" = "rmsDbfs"
+        let metric_label = "vu"
+        let effective_target = target_db
+        if (metric_arg === "peak") {
+            metric = "peakDbfs"
+            metric_label = "peak"
+        } else if (metric_arg === "auto") {
+            // クレストファクターが大きい（過渡依存の）音は PEAK を見る。
+            const levels = await measure()
+            const crest =
+                levels.peakDbfs !== null && levels.rmsDbfs !== null
+                    ? levels.peakDbfs - levels.rmsDbfs
+                    : 0
+            if (crest > AUTO_CREST_THRESHOLD_DB) {
+                metric = "peakDbfs"
+                metric_label = "peak"
+                effective_target = target_db + AUTO_PEAK_OFFSET_DB
+            }
+        }
         const result = await convergeBisection(
             deps,
             {
@@ -340,11 +369,14 @@ export async function executeGainstage(
                 getValue: () => volume.getValue(),
                 setValue: (value) => volume.setValue(value),
             },
-            () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats()),
-            target_db,
-            "rmsDbfs",
+            measure,
+            effective_target,
+            metric,
         )
-        return convergenceResponse(procedure, "vu", target_db, result)
+        return {
+            ...convergenceResponse(procedure, metric_label, effective_target, result),
+            metricMode: metric_label,
+        }
     }
 
     if (procedure === "gainstage.device") {
