@@ -568,6 +568,16 @@ export async function executeGainstage(
                         result,
                     ),
                 })
+                deps.log.info("gainstage.chain stage", {
+                    track: track_name,
+                    device: device.name,
+                    param: gain.name,
+                    originalValue: result.originalValue,
+                    appliedValue: result.appliedValue,
+                    beforeDbfs: result.beforeDbfs,
+                    afterDbfs: result.afterDbfs,
+                    converged: result.converged,
+                })
             }
         } finally {
             for (let j = 0; j < handles.length; j++) {
