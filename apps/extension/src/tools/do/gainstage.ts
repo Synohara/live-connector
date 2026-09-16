@@ -19,8 +19,8 @@ type V = TargetApiVersion
 const POLL_INTERVAL_MS = 50
 const PLAY_TIMEOUT_MS = 10_000
 const MEASURE_OVERHEAD_MS = 5_000
-const PROBE_STEP_FRACTION = 0.1
 const MIN_PARAMETER_STEP = 1e-4
+const WRITE_TOLERANCE = 0.01
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
@@ -146,17 +146,33 @@ export type ConvergenceResult = {
     beforeDbfs: number | null
     afterDbfs: number | null
     appliedValue: number
+    /** 変更前のパラメータ値（ゲイン）。 */
+    originalValue: number
     measuredValueBefore: number
 }
 
+/** パラメータへ書き込み、読み戻して反映を確認する。 */
+async function setParameter(parameter: ParameterHandle, value: number): Promise<void> {
+    await parameter.setValue(value)
+    const observed = await parameter.getValue()
+    if (Math.abs(observed - value) > WRITE_TOLERANCE) {
+        throw new HybridError(
+            "OSC_WRITE_UNCERTAIN",
+            `${parameter.label} write was not confirmed (set ${value}, read ${observed})`,
+        )
+    }
+}
+
 /** 単調性（値を上げるとレベルが上がる）を仮定した二分探索で目標 dB へ寄せる。
- * 傾き外挿は fader の非線形性で発散し得るため使わない。未収束時は元値へ復元する。 */
-async function convergeParameter(
+ * 傾き外挿は fader の非線形性で発散し得るため使わない。未収束時は元値へ復元する。
+ * `ineffectiveHint` を渡した場合、レベルがまったく動かなければその理由を添えて失敗させる。 */
+async function convergeBisection(
     deps: ServerDeps,
     parameter: ParameterHandle,
     measure: () => Promise<AudioLevels>,
     target_db: number,
     metric: "rmsDbfs" | "peakDbfs",
+    ineffectiveHint?: string,
 ): Promise<ConvergenceResult> {
     const tolerance = deps.runtime.gainstageToleranceDb()
     const max_iterations = deps.runtime.gainstageMaxIterations()
@@ -181,6 +197,7 @@ async function convergeParameter(
             afterDbfs: before_db,
             appliedValue: original,
             measuredValueBefore: original,
+            originalValue: original,
         }
     }
 
@@ -188,10 +205,10 @@ async function convergeParameter(
     const searching_up = before_db < target_db
     let low = searching_up ? original : parameter.min
     let high = searching_up ? parameter.max : original
-    let best_value = original
     let best_level: number | null = before_db
     let best_error = Math.abs(before_db - target_db)
     let iterations = 0
+    let responded = false
 
     for (let iteration = 1; iteration <= max_iterations; iteration++) {
         iterations = iteration
@@ -199,13 +216,15 @@ async function convergeParameter(
         if (Math.abs(high - low) < MIN_PARAMETER_STEP) {
             break
         }
-        await parameter.setValue(mid)
+        await setParameter(parameter, mid)
         const level = (await measure())[metric]
         const effective = finite(level)
+        if (Math.abs(effective - before_db) > tolerance) {
+            responded = true
+        }
         const error = Math.abs(effective - target_db)
         if (error < best_error) {
             best_error = error
-            best_value = mid
             best_level = level
         }
         if (Math.abs(effective - target_db) <= tolerance) {
@@ -216,6 +235,7 @@ async function convergeParameter(
                 afterDbfs: level,
                 appliedValue: mid,
                 measuredValueBefore: original,
+                originalValue: original,
             }
         }
         if (effective < target_db) {
@@ -225,26 +245,19 @@ async function convergeParameter(
         }
     }
 
-    // 未収束: 元より目標に近ければその値を残し、そうでなければ元値へ戻す。
-    const improved = best_error < Math.abs(before_db - target_db)
-    if (!improved) {
-        await parameter.setValue(original)
-        return {
-            converged: false,
-            iterations,
-            beforeDbfs: before_db,
-            afterDbfs: before_db,
-            appliedValue: original,
-            measuredValueBefore: original,
-        }
+    // 未収束: 意図しない音の変化を残さないため、常に元の値へ復元する。
+    await setParameter(parameter, original)
+    if (!responded && ineffectiveHint !== undefined) {
+        throw new HybridError("GAINSTAGE_NOT_CONVERGED", ineffectiveHint)
     }
     return {
         converged: false,
         iterations,
         beforeDbfs: before_db,
         afterDbfs: best_level,
-        appliedValue: best_value,
+        appliedValue: original,
         measuredValueBefore: original,
+        originalValue: original,
     }
 }
 
@@ -318,7 +331,7 @@ export async function executeGainstage(
         const index = await findTrackIndex(routing, track_name)
         const track = findTrackByName(deps, track_name)
         const volume = track.mixer.volume
-        const result = await convergeParameter(
+        const result = await convergeBisection(
             deps,
             {
                 label: "Track Volume",
@@ -343,7 +356,7 @@ export async function executeGainstage(
         const track = findTrackByName(deps, track_name)
         const device = findDevice(track, device_name)
         const parameter = findGainParameter(device, device_name)
-        const result = await convergeParameter(
+        const result = await convergeBisection(
             deps,
             {
                 label: `${device_name}.${parameter.name}`,
@@ -355,6 +368,7 @@ export async function executeGainstage(
             () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats()),
             target_db,
             "rmsDbfs",
+            `${device_name}.${parameter.name} did not measurably change the level; on devices with Dry/Wet the dry signal bypasses the Output gain. Use the track volume, or set Dry/Wet explicitly (this changes the sound). The value was restored.`,
         )
         return convergenceResponse(procedure, "vu", target_db, result)
     }
@@ -394,6 +408,7 @@ function convergenceResponse(
         undoable: "none",
         metric,
         targetDb: target_db,
+        originalValue: result.originalValue,
         beforeDbfs: result.beforeDbfs,
         afterDbfs: result.afterDbfs,
         appliedValue: result.appliedValue,
@@ -402,12 +417,13 @@ function convergenceResponse(
         ...(result.converged
             ? {}
             : {
-                  note: "Convergence did not reach the tolerance; the value was left at the last step.",
+                  note: "Convergence did not reach the tolerance; the parameter was restored to originalValue.",
+                  bestDbfs: result.afterDbfs,
               }),
     }
 }
 
-/** Main の捕捉を繰り返して Main volume を収束させる。 */
+/** Main の捕捉を指標に、Main volume を二分探索で目標へ寄せる。各測定点は実時間キャプチャ。 */
 async function convergeMain(
     deps: ServerDeps,
     volume: {
@@ -420,13 +436,8 @@ async function convergeMain(
     beats: number,
     metric: "rmsDbfs" | "peakDbfs",
 ): Promise<{ result: ConvergenceResult; lastJobId: string | undefined }> {
-    const tolerance = deps.runtime.gainstageToleranceDb()
-    const max_iterations = deps.runtime.gainstageMaxIterations()
-    const clamp = (value: number) => Math.min(volume.max, Math.max(volume.min, value))
-    let value = clamp(await volume.getValue())
     let last_job_id: string | undefined
-
-    const measure = async (): Promise<{ levels: AudioLevels; jobId: string }> => {
+    const measure = async (): Promise<AudioLevels> => {
         const job = await captureMainSync(deps, beats)
         last_job_id = job.id
         if (job.audioStatus !== "ready" || job.audio === undefined) {
@@ -435,90 +446,20 @@ async function convergeMain(
                 `Main capture did not produce audio (${job.error ?? job.status})`,
             )
         }
-        return {
-            levels: { rmsDbfs: job.audio.rmsDbfs ?? null, peakDbfs: job.audio.peakDbfs ?? null },
-            jobId: job.id,
-        }
+        return { rmsDbfs: job.audio.rmsDbfs ?? null, peakDbfs: job.audio.peakDbfs ?? null }
     }
-
-    const initial = await measure()
-    let measured = initial.levels[metric]
-    const before_db = measured
-    if (measured === null) {
-        throw new HybridError(
-            "GAINSTAGE_NOT_CONVERGED",
-            "Main capture produced silence during the measurement",
-        )
-    }
-    if (Math.abs(measured - target_db) <= tolerance) {
-        return {
-            result: {
-                converged: true,
-                iterations: 0,
-                beforeDbfs: before_db,
-                afterDbfs: measured,
-                appliedValue: value,
-                measuredValueBefore: value,
-            },
-            lastJobId: last_job_id,
-        }
-    }
-
-    const step = Math.max(MIN_PARAMETER_STEP, (volume.max - volume.min) * PROBE_STEP_FRACTION)
-    const probe_value = clamp(value + step)
-    if (Math.abs(probe_value - value) < MIN_PARAMETER_STEP) {
-        throw new HybridError("GAINSTAGE_NOT_CONVERGED", "Main volume cannot be adjusted")
-    }
-    await volume.setValue(probe_value)
-    const probed = await measure()
-    if (probed.levels[metric] === null) {
-        throw new HybridError("GAINSTAGE_NOT_CONVERGED", "The Main probe produced silence")
-    }
-    const slope = ((probed.levels[metric] ?? 0) - measured) / (probe_value - value)
-    if (!Number.isFinite(slope) || Math.abs(slope) < 1e-6) {
-        throw new HybridError(
-            "GAINSTAGE_NOT_CONVERGED",
-            "Main volume did not change the measured level",
-        )
-    }
-    value = probe_value
-    measured = probed.levels[metric]
-
-    for (let iteration = 1; iteration <= max_iterations; iteration++) {
-        if (Math.abs((measured ?? target_db) - target_db) <= tolerance) {
-            return {
-                result: {
-                    converged: true,
-                    iterations: iteration,
-                    beforeDbfs: before_db,
-                    afterDbfs: measured,
-                    appliedValue: value,
-                    measuredValueBefore: value,
-                },
-                lastJobId: last_job_id,
-            }
-        }
-        const next = clamp(value + (target_db - (measured ?? target_db)) / slope)
-        if (Math.abs(next - value) < MIN_PARAMETER_STEP) {
-            break
-        }
-        await volume.setValue(next)
-        const measured_next = await measure()
-        value = next
-        measured = measured_next.levels[metric]
-        if (measured === null) {
-            throw new HybridError("GAINSTAGE_NOT_CONVERGED", "The adjusted Main capture was silent")
-        }
-    }
-    return {
-        result: {
-            converged: false,
-            iterations: max_iterations,
-            beforeDbfs: before_db,
-            afterDbfs: measured,
-            appliedValue: value,
-            measuredValueBefore: value,
+    const result = await convergeBisection(
+        deps,
+        {
+            label: "Main Volume",
+            min: volume.min,
+            max: volume.max,
+            getValue: () => volume.getValue(),
+            setValue: (value) => volume.setValue(value),
         },
-        lastJobId: last_job_id,
-    }
+        measure,
+        target_db,
+        metric,
+    )
+    return { result, lastJobId: last_job_id }
 }
