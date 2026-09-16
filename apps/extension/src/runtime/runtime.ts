@@ -25,6 +25,9 @@ export type RuntimeOptions = {
     transportFactory?: (settings: OscSettings, log: Logger) => OscDatagramTransport
 }
 
+/** ハンドシェイク結果をキャッシュする時間。 */
+const OSC_PROBE_TTL_MS = 5_000
+
 /** activation 単位で共有する Hybrid Runtime。 */
 export class HybridRuntime {
     readonly settings: OscSettings
@@ -38,6 +41,8 @@ export class HybridRuntime {
     private routing_adapter: OscRoutingAdapter | null = null
     private capture_resolver: CaptureResolver | null = null
     private osc_error: string | undefined
+    private osc_connected = false
+    private last_probe_at = 0
     private started = false
 
     constructor(env: Env, log: Logger, options: RuntimeOptions = {}) {
@@ -75,12 +80,18 @@ export class HybridRuntime {
             this.transport_adapter = new OscTransportAdapter(client)
             this.routing_adapter = new OscRoutingAdapter(client)
             this.capture_resolver = new CaptureResolver(this.routing_adapter)
-            this.osc_error = undefined
-            this.log.info("OSC client connected", {
-                host: this.settings.host,
-                sendPort: this.settings.sendPort,
-                replyPort: this.settings.replyPort,
-            })
+            await this.refreshOscStatus(true)
+            if (this.osc_connected) {
+                this.log.info("OSC client connected", {
+                    host: this.settings.host,
+                    sendPort: this.settings.sendPort,
+                    replyPort: this.settings.replyPort,
+                })
+            } else {
+                this.log.warn("OSC socket bound but AbletonOSC did not answer", {
+                    error: this.osc_error,
+                })
+            }
         } catch (error) {
             this.osc_error = error instanceof Error ? error.message : String(error)
             this.log.warn("OSC client unavailable; only SDK features are active", {
@@ -90,6 +101,34 @@ export class HybridRuntime {
             this.transport_adapter = null
             this.routing_adapter = null
             this.capture_resolver = null
+            this.osc_connected = false
+        }
+    }
+
+    /**
+     * AbletonOSC が応答するかを確認する。結果は短時間キャッシュする。
+     * ソケットが bind できても AbletonOSC が無応答なら connected にしない。
+     */
+    async refreshOscStatus(force = false): Promise<void> {
+        if (this.client === null || this.transport_adapter === null) {
+            this.osc_connected = false
+            if (this.settings.enabled && this.osc_error === undefined) {
+                this.osc_error = "AbletonOSC is not connected"
+            }
+            return
+        }
+        const now = Date.now()
+        if (!force && now - this.last_probe_at < OSC_PROBE_TTL_MS) {
+            return
+        }
+        this.last_probe_at = now
+        try {
+            await this.transport_adapter.ping()
+            this.osc_connected = true
+            this.osc_error = undefined
+        } catch (error) {
+            this.osc_connected = false
+            this.osc_error = error instanceof Error ? error.message : String(error)
         }
     }
 
@@ -102,6 +141,7 @@ export class HybridRuntime {
         this.transport_adapter = null
         this.routing_adapter = null
         this.capture_resolver = null
+        this.osc_connected = false
         this.started = false
     }
 
@@ -110,7 +150,7 @@ export class HybridRuntime {
     }
 
     oscConnected(): boolean {
-        return this.client?.isStarted() ?? false
+        return this.osc_connected
     }
 
     oscReason(): string | undefined {
@@ -135,7 +175,7 @@ export class HybridRuntime {
 
     /** Transport adapter を返す。未接続なら OSC_UNAVAILABLE。 */
     requireTransport(): OscTransportAdapter {
-        if (this.transport_adapter === null) {
+        if (!this.osc_connected || this.transport_adapter === null) {
             throw new HybridError(
                 "OSC_UNAVAILABLE",
                 this.osc_error ?? "AbletonOSC is not connected",
@@ -146,7 +186,7 @@ export class HybridRuntime {
 
     /** Routing adapter を返す。未接続なら OSC_UNAVAILABLE。 */
     requireRouting(): OscRoutingAdapter {
-        if (this.routing_adapter === null) {
+        if (!this.osc_connected || this.routing_adapter === null) {
             throw new HybridError(
                 "OSC_UNAVAILABLE",
                 this.osc_error ?? "AbletonOSC is not connected",
@@ -157,7 +197,7 @@ export class HybridRuntime {
 
     /** Capture resolver を返す。未接続なら OSC_UNAVAILABLE。 */
     requireResolver(): CaptureResolver {
-        if (this.capture_resolver === null) {
+        if (!this.osc_connected || this.capture_resolver === null) {
             throw new HybridError(
                 "OSC_UNAVAILABLE",
                 this.osc_error ?? "AbletonOSC is not connected",

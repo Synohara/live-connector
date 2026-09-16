@@ -139,7 +139,11 @@ export class OscClient {
     }
 
     /** GET 相当。応答を待ち、タイムアウト時は限定回数だけ再送する。 */
-    request(address: string, args: OscArg[] = []): Promise<OscMessage> {
+    request(
+        address: string,
+        args: OscArg[] = [],
+        options: { retries?: number } = {},
+    ): Promise<OscMessage> {
         if (!this.started) {
             return Promise.reject(new HybridError("OSC_UNAVAILABLE", "OSC client is not connected"))
         }
@@ -149,7 +153,7 @@ export class OscClient {
                 args,
                 resolve,
                 reject,
-                retries_left: GET_RETRY_LIMIT,
+                retries_left: options.retries ?? GET_RETRY_LIMIT,
                 timer: undefined,
             }
             const queue = this.queues.get(address) ?? []

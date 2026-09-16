@@ -32,6 +32,8 @@ type V = TargetApiVersion
 const POLL_INTERVAL_MS = 50
 const PLAY_TIMEOUT_MS = 10_000
 const STOP_TIMEOUT_MS = 10_000
+/** SDK で作成したトラックが OSC のトラック一覧に現れるまでの待ち時間。 */
+const PAIRING_TIMEOUT_MS = 8_000
 /** SDK が OSC 録音由来の arrangement clip を取得できるまでの待ち時間。 */
 const CLIP_SYNC_TIMEOUT_MS = 15_000
 const REALTIME_OVERHEAD_MS = 15_000
@@ -68,11 +70,18 @@ export async function preflightMainCapture(
             "Stop playback and recording before starting a Main capture",
         )
     }
-    if (!state.backToArranger) {
-        throw new HybridError(
-            "ARRANGEMENT_NOT_ACTIVE",
-            "Live is not in Arrangement playback mode; enable Back to Arrangement first",
-        )
+    // `back_to_arranger` は停止中 false を返すことがあり Arrangement 可否を判定できない。
+    // 代わりに Session clip が再生中でないことを確認する（Session 出力を録らないため）。
+    const routing = deps.runtime.requireRouting()
+    const track_names = await routing.listTrackNames()
+    for (const index of track_names.keys()) {
+        const playing_slot = await routing.getPlayingSlotIndex(index)
+        if (playing_slot >= 0) {
+            throw new HybridError(
+                "ARRANGEMENT_NOT_ACTIVE",
+                `A Session clip is playing on track ${index}; stop it before a Main capture`,
+            )
+        }
     }
     const warnings: string[] = []
     if (deps.runtime.validationLevel() === "unverified") {
@@ -352,8 +361,8 @@ class MainCaptureJob {
         this.capture_track = created
         created.name = this.unique_name
 
-        const names = sdkTrackNames(song)
-        const osc_index = await runtime.requireResolver().resolveOscIndex(this.unique_name, names)
+        // SDK のトラック作成・改名は Live へ非同期に反映される。OSC 側に現れるまで期限付きで待つ。
+        const osc_index = await this.waitForPairing()
         this.osc_index = osc_index
 
         if (created.devices.length > 0) {
@@ -380,6 +389,32 @@ class MainCaptureJob {
         await this.configureRouting(osc_index, created)
         await this.routing.setArm(osc_index, true)
         this.recordApplied("arm", true)
+    }
+
+    /** SDK で作成・改名した一時トラックが OSC 側へ反映されるまで待って index を解決する。 */
+    private async waitForPairing(): Promise<number> {
+        const deadline = Date.now() + PAIRING_TIMEOUT_MS
+        let last_error: unknown
+        for (;;) {
+            const song = this.deps.context.application.song
+            const names = sdkTrackNames(song)
+            try {
+                return await this.deps.runtime
+                    .requireResolver()
+                    .resolveOscIndex(this.unique_name, names)
+            } catch (error) {
+                last_error = error
+            }
+            if (Date.now() > deadline) {
+                throw last_error instanceof Error
+                    ? last_error
+                    : new HybridError(
+                          "SET_IDENTITY_MISMATCH",
+                          `Capture track "${this.unique_name}" did not appear to OSC in time`,
+                      )
+            }
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+        }
     }
 
     private async readBeforeState(): Promise<CaptureBeforeState> {
@@ -643,10 +678,10 @@ class MainCaptureJob {
 
     private async releaseCaptureTrack(): Promise<void> {
         const track = this.capture_track
-        if (track === null || this.osc_index === null) {
+        if (track === null) {
             return
         }
-        if (this.params.keepCaptureTrack) {
+        if (this.params.keepCaptureTrack && this.osc_index !== null) {
             try {
                 await this.routing.setArm(this.osc_index, false)
                 track.mute = true
@@ -656,6 +691,7 @@ class MainCaptureJob {
             updateRenderJob(this.job_id, { captureTrackRetained: true })
             return
         }
+        // OSC index を解決できなかった場合でも、SDK handle で自分の一時トラックだけを削除する。
         try {
             const song = this.deps.context.application.song
             await this.deps.context.withinTransaction(() => song.deleteTrack(track))

@@ -15,8 +15,7 @@ import {
     OSC_SONG_ENDPOINTS,
     OSC_TRACK_ENDPOINTS,
 } from "./protocol"
-
-const VALUE_TOLERANCE = 0.0001
+import { converge, convergeNumber } from "./verify"
 
 /** OSC 経由のトラック操作。 */
 export class OscRoutingAdapter {
@@ -77,13 +76,11 @@ export class OscRoutingAdapter {
 
     async setInputRoutingType(index: number, display_name: string): Promise<void> {
         this.client.send(OSC_TRACK_ENDPOINTS.setInputRoutingType, [index, display_name])
-        const observed = await this.getInputRoutingType(index)
-        if (observed !== display_name) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `input_routing_type could not be set to "${display_name}" (observed "${observed}")`,
-            )
-        }
+        await converge(
+            () => this.getInputRoutingType(index),
+            (value) => value === display_name,
+            "input_routing_type",
+        )
     }
 
     async getAvailableOutputRoutingTypes(index: number): Promise<string[]> {
@@ -100,13 +97,11 @@ export class OscRoutingAdapter {
 
     async setOutputRoutingType(index: number, display_name: string): Promise<void> {
         this.client.send(OSC_TRACK_ENDPOINTS.setOutputRoutingType, [index, display_name])
-        const observed = await this.getOutputRoutingType(index)
-        if (observed !== display_name) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `output_routing_type could not be set to "${display_name}" (observed "${observed}")`,
-            )
-        }
+        await converge(
+            () => this.getOutputRoutingType(index),
+            (value) => value === display_name,
+            "output_routing_type",
+        )
     }
 
     async getMonitoringState(index: number): Promise<number> {
@@ -117,28 +112,31 @@ export class OscRoutingAdapter {
 
     async setMonitoringState(index: number, state: number): Promise<void> {
         this.client.send(OSC_TRACK_ENDPOINTS.setMonitoringState, [index, state])
-        const observed = await this.getMonitoringState(index)
-        if (observed !== state) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `current_monitoring_state could not be set to ${state} (observed ${observed})`,
-            )
-        }
+        await converge(
+            () => this.getMonitoringState(index),
+            (value) => value === state,
+            "current_monitoring_state",
+        )
     }
 
     async getArm(index: number): Promise<boolean> {
         return expectTrackBoolean(await this.client.request(OSC_TRACK_ENDPOINTS.getArm, [index]))
     }
 
+    /** 再生中の Session clip slot index。再生していなければ -1。 */
+    async getPlayingSlotIndex(index: number): Promise<number> {
+        return expectTrackNumber(
+            await this.client.request(OSC_TRACK_ENDPOINTS.getPlayingSlotIndex, [index]),
+        )
+    }
+
     async setArm(index: number, value: boolean): Promise<void> {
         this.client.send(OSC_TRACK_ENDPOINTS.setArm, [index, value ? 1 : 0])
-        const observed = await this.getArm(index)
-        if (observed !== value) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `arm could not be set to ${value} (observed ${observed})`,
-            )
-        }
+        await converge(
+            () => this.getArm(index),
+            (observed) => observed === value,
+            "arm",
+        )
     }
 
     async getSend(index: number, send_id: number): Promise<number> {
@@ -149,12 +147,6 @@ export class OscRoutingAdapter {
 
     async setSend(index: number, send_id: number, value: number): Promise<void> {
         this.client.send(OSC_TRACK_ENDPOINTS.setSend, [index, send_id, value])
-        const observed = await this.getSend(index, send_id)
-        if (Math.abs(observed - value) > VALUE_TOLERANCE) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `send ${send_id} could not be set to ${value} (observed ${observed})`,
-            )
-        }
+        await convergeNumber(() => this.getSend(index, send_id), value, `send ${send_id}`, 0.0001)
     }
 }

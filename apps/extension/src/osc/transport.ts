@@ -6,6 +6,7 @@
 import { HybridError } from "@live-connector/error"
 import type { OscClient } from "./client"
 import { expectSongBoolean, expectSongNumber, OSC_SONG_ENDPOINTS } from "./protocol"
+import { converge, convergeNumber } from "./verify"
 
 /** Transport のスナップショット。observedAt で鮮度を示す。 */
 export type TransportState = {
@@ -21,8 +22,6 @@ export type TransportState = {
     backToArranger: boolean
     observedAt: string
 }
-
-const VALUE_TOLERANCE = 0.05
 
 /** OSC 経由の Transport 操作。プレビューでは一切呼び出さない。 */
 export class OscTransportAdapter {
@@ -80,6 +79,13 @@ export class OscTransportAdapter {
         return expectSongNumber(await this.client.request(OSC_SONG_ENDPOINTS.getTempo))
     }
 
+    /** AbletonOSC が応答するかを 1 回だけ確認する（再送なし）。 */
+    async ping(): Promise<number> {
+        return expectSongNumber(
+            await this.client.request(OSC_SONG_ENDPOINTS.getTempo, [], { retries: 0 }),
+        )
+    }
+
     async readIsPlaying(): Promise<boolean> {
         return expectSongBoolean(await this.client.request(OSC_SONG_ENDPOINTS.getIsPlaying))
     }
@@ -94,27 +100,19 @@ export class OscTransportAdapter {
         this.client.send(OSC_SONG_ENDPOINTS.stopPlaying)
     }
 
-    /** 再生位置を拍で設定し、読み戻して確認する。 */
+    /** 再生位置を拍で設定し、読み戻して収束を確認する。 */
     async seek(beats: number): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setCurrentSongTime, [beats])
-        const observed = await this.readCurrentSongTime()
-        if (Math.abs(observed - beats) > VALUE_TOLERANCE) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `Seek to ${beats} beats could not be confirmed (observed ${observed})`,
-            )
-        }
+        await convergeNumber(() => this.readCurrentSongTime(), beats, "current_song_time")
     }
 
     async setRecordMode(enabled: boolean): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setRecordMode, [enabled ? 1 : 0])
-        const observed = await this.readRecordMode()
-        if (observed !== enabled) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `record_mode could not be set to ${enabled} (observed ${observed})`,
-            )
-        }
+        await converge(
+            () => this.readRecordMode(),
+            (value) => value === enabled,
+            "record_mode",
+        )
     }
 
     async readRecordMode(): Promise<boolean> {
@@ -123,53 +121,54 @@ export class OscTransportAdapter {
 
     async setLoop(enabled: boolean): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setLoop, [enabled ? 1 : 0])
-        const observed = expectSongBoolean(await this.client.request(OSC_SONG_ENDPOINTS.getLoop))
-        if (observed !== enabled) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `loop could not be set to ${enabled} (observed ${observed})`,
-            )
-        }
+        await converge(
+            () => this.readLoop(),
+            (value) => value === enabled,
+            "loop",
+        )
+    }
+
+    async readLoop(): Promise<boolean> {
+        return expectSongBoolean(await this.client.request(OSC_SONG_ENDPOINTS.getLoop))
     }
 
     async setLoopStart(beats: number): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setLoopStart, [beats])
-        const observed = expectSongNumber(
-            await this.client.request(OSC_SONG_ENDPOINTS.getLoopStart),
+        await convergeNumber(
+            async () =>
+                expectSongNumber(await this.client.request(OSC_SONG_ENDPOINTS.getLoopStart)),
+            beats,
+            "loop_start",
         )
-        this.assertClose("loop_start", beats, observed)
     }
 
     async setLoopLength(beats: number): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setLoopLength, [beats])
-        const observed = expectSongNumber(
-            await this.client.request(OSC_SONG_ENDPOINTS.getLoopLength),
+        await convergeNumber(
+            async () =>
+                expectSongNumber(await this.client.request(OSC_SONG_ENDPOINTS.getLoopLength)),
+            beats,
+            "loop_length",
         )
-        this.assertClose("loop_length", beats, observed)
     }
 
     async setPunchIn(enabled: boolean): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setPunchIn, [enabled ? 1 : 0])
-        const observed = expectSongBoolean(await this.client.request(OSC_SONG_ENDPOINTS.getPunchIn))
-        if (observed !== enabled) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `punch_in could not be set to ${enabled} (observed ${observed})`,
-            )
-        }
+        await converge(
+            async () => expectSongBoolean(await this.client.request(OSC_SONG_ENDPOINTS.getPunchIn)),
+            (value) => value === enabled,
+            "punch_in",
+        )
     }
 
     async setPunchOut(enabled: boolean): Promise<void> {
         this.client.send(OSC_SONG_ENDPOINTS.setPunchOut, [enabled ? 1 : 0])
-        const observed = expectSongBoolean(
-            await this.client.request(OSC_SONG_ENDPOINTS.getPunchOut),
+        await converge(
+            async () =>
+                expectSongBoolean(await this.client.request(OSC_SONG_ENDPOINTS.getPunchOut)),
+            (value) => value === enabled,
+            "punch_out",
         )
-        if (observed !== enabled) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `punch_out could not be set to ${enabled} (observed ${observed})`,
-            )
-        }
     }
 
     /** 再生中になるまでポーリングする。タイムアウト時は OSC_WRITE_UNCERTAIN。 */
@@ -180,15 +179,6 @@ export class OscTransportAdapter {
     /** 停止するまでポーリングする。 */
     async waitForStopped(timeout_ms: number): Promise<void> {
         await this.waitFor(async () => !(await this.readIsPlaying()), timeout_ms, "stopped")
-    }
-
-    private assertClose(label: string, expected: number, observed: number): void {
-        if (Math.abs(observed - expected) > VALUE_TOLERANCE) {
-            throw new HybridError(
-                "OSC_WRITE_UNCERTAIN",
-                `${label} could not be set to ${expected} (observed ${observed})`,
-            )
-        }
     }
 
     private async waitFor(

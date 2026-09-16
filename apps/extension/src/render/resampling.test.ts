@@ -98,6 +98,17 @@ describe("Main capture", () => {
         expect(live.song.tracks).toHaveLength(1)
     })
 
+    it("rejects a capture while a Session clip is playing", async () => {
+        const state = makeFakeOscState()
+        const { deps, live } = await buildDeps(state)
+        state.trackNamesSource = () => live.song.tracks.map((track) => track.name)
+        state.playingSlot.set(0, 2)
+
+        await expect(
+            runRender(deps, { ...baseParams(), preview: true } as never),
+        ).rejects.toMatchObject({ code: "ARRANGEMENT_NOT_ACTIVE" })
+    })
+
     it("records, exports, restores and deletes the capture track", async () => {
         const state = makeFakeOscState()
         const { deps, live } = await buildDeps(state)
@@ -299,6 +310,19 @@ describe("Main capture", () => {
         const capabilities = deps.runtime.capabilities()
         expect(capabilities.render.mainOutput.available).toBe(false)
         expect(capabilities.render.mainOutput.reason).toBeDefined()
+        await expect(
+            runRender(deps, { ...baseParams(), preview: true } as never),
+        ).rejects.toMatchObject({ code: "OSC_UNAVAILABLE" })
+    })
+
+    it("reports OSC unavailable when the socket binds but AbletonOSC does not answer", async () => {
+        const state = makeFakeOscState()
+        // ソケットは bind できるが get/tempo に応答しない（AbletonOSC 未起動の再現）。
+        state.dropAddresses = new Set(["/live/song/get/tempo"])
+        const { deps } = await buildDeps(state)
+
+        expect(deps.runtime.oscConnected()).toBe(false)
+        expect(deps.runtime.capabilities().render.mainOutput.available).toBe(false)
         await expect(
             runRender(deps, { ...baseParams(), preview: true } as never),
         ).rejects.toMatchObject({ code: "OSC_UNAVAILABLE" })

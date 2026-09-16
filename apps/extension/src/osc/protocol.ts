@@ -50,6 +50,7 @@ export const OSC_TRACK_ENDPOINTS = {
     getName: "/live/track/get/name",
     getArm: "/live/track/get/arm",
     setArm: "/live/track/set/arm",
+    getPlayingSlotIndex: "/live/track/get/playing_slot_index",
     getMonitoringState: "/live/track/get/current_monitoring_state",
     setMonitoringState: "/live/track/set/current_monitoring_state",
     getAvailableInputRoutingTypes: "/live/track/get/available_input_routing_types",

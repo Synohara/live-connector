@@ -136,6 +136,7 @@ export function registerMetaTool(server: McpServer, deps: ServerDeps): void {
         },
         async ({ includeClips, trackOffset, trackLimit }) => {
             try {
+                await deps.runtime.refreshOscStatus()
                 const capability_pair = deps.runtime.capabilities()
                 const payload = {
                     service: { name: "live-connector", version: SERVICE_VERSION },
