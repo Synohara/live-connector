@@ -149,7 +149,8 @@ export type ConvergenceResult = {
     measuredValueBefore: number
 }
 
-/** 実測の傾きからパラメータを目標 dB へ収束させる。 */
+/** 単調性（値を上げるとレベルが上がる）を仮定した二分探索で目標 dB へ寄せる。
+ * 傾き外挿は fader の非線形性で発散し得るため使わない。未収束時は元値へ復元する。 */
 async function convergeParameter(
     deps: ServerDeps,
     parameter: ParameterHandle,
@@ -160,83 +161,90 @@ async function convergeParameter(
     const tolerance = deps.runtime.gainstageToleranceDb()
     const max_iterations = deps.runtime.gainstageMaxIterations()
     const clamp = (value: number) => Math.min(parameter.max, Math.max(parameter.min, value))
+    const finite = (value: number | null): number =>
+        value === null ? Number.NEGATIVE_INFINITY : value
 
-    let value = clamp(await parameter.getValue())
-    const initial = await measure()
-    let measured = initial[metric]
-    const before_db = measured
-    if (measured === null) {
+    const original = clamp(await parameter.getValue())
+    const initial = (await measure())[metric]
+    const before_db = initial
+    if (before_db === null) {
         throw new HybridError(
             "GAINSTAGE_NOT_CONVERGED",
             "No measurable signal was detected during the measurement window",
         )
     }
-    const within = (current: number | null) =>
-        current !== null && Math.abs(current - target_db) <= tolerance
-    if (within(measured)) {
+    if (Math.abs(before_db - target_db) <= tolerance) {
         return {
             converged: true,
             iterations: 0,
             beforeDbfs: before_db,
-            afterDbfs: measured,
-            appliedValue: value,
-            measuredValueBefore: value,
+            afterDbfs: before_db,
+            appliedValue: original,
+            measuredValueBefore: original,
         }
     }
 
-    const step = Math.max(MIN_PARAMETER_STEP, (parameter.max - parameter.min) * PROBE_STEP_FRACTION)
-    const probe_value = clamp(value + step)
-    if (Math.abs(probe_value - value) < MIN_PARAMETER_STEP) {
-        throw new HybridError("GAINSTAGE_NOT_CONVERGED", `${parameter.label} cannot be adjusted`)
-    }
-    await parameter.setValue(probe_value)
-    const probed = await measure()
-    if (probed[metric] === null) {
-        throw new HybridError("GAINSTAGE_NOT_CONVERGED", "The probe measurement produced silence")
-    }
-    const slope = ((probed[metric] ?? 0) - measured) / (probe_value - value)
-    if (!Number.isFinite(slope) || Math.abs(slope) < 1e-6) {
-        throw new HybridError(
-            "GAINSTAGE_NOT_CONVERGED",
-            `${parameter.label} did not change the measured level`,
-        )
-    }
-    value = probe_value
-    measured = probed[metric]
+    // 目標が現在より大きい（音を上げる）か小さい（下げる）かで探索区間を決める。
+    const searching_up = before_db < target_db
+    let low = searching_up ? original : parameter.min
+    let high = searching_up ? parameter.max : original
+    let best_value = original
+    let best_level: number | null = before_db
+    let best_error = Math.abs(before_db - target_db)
+    let iterations = 0
 
     for (let iteration = 1; iteration <= max_iterations; iteration++) {
-        if (within(measured)) {
-            return {
-                converged: true,
-                iterations: iteration,
-                beforeDbfs: before_db,
-                afterDbfs: measured,
-                appliedValue: value,
-                measuredValueBefore: value,
-            }
-        }
-        const next = clamp(value + (target_db - (measured ?? target_db)) / slope)
-        if (Math.abs(next - value) < MIN_PARAMETER_STEP) {
+        iterations = iteration
+        const mid = clamp((low + high) / 2)
+        if (Math.abs(high - low) < MIN_PARAMETER_STEP) {
             break
         }
-        await parameter.setValue(next)
-        const measured_next = await measure()
-        value = next
-        measured = measured_next[metric]
-        if (measured === null) {
-            throw new HybridError(
-                "GAINSTAGE_NOT_CONVERGED",
-                "The adjusted measurement produced silence",
-            )
+        await parameter.setValue(mid)
+        const level = (await measure())[metric]
+        const effective = finite(level)
+        const error = Math.abs(effective - target_db)
+        if (error < best_error) {
+            best_error = error
+            best_value = mid
+            best_level = level
+        }
+        if (Math.abs(effective - target_db) <= tolerance) {
+            return {
+                converged: true,
+                iterations,
+                beforeDbfs: before_db,
+                afterDbfs: level,
+                appliedValue: mid,
+                measuredValueBefore: original,
+            }
+        }
+        if (effective < target_db) {
+            low = mid
+        } else {
+            high = mid
+        }
+    }
+
+    // 未収束: 元より目標に近ければその値を残し、そうでなければ元値へ戻す。
+    const improved = best_error < Math.abs(before_db - target_db)
+    if (!improved) {
+        await parameter.setValue(original)
+        return {
+            converged: false,
+            iterations,
+            beforeDbfs: before_db,
+            afterDbfs: before_db,
+            appliedValue: original,
+            measuredValueBefore: original,
         }
     }
     return {
         converged: false,
-        iterations: max_iterations,
+        iterations,
         beforeDbfs: before_db,
-        afterDbfs: measured,
-        appliedValue: value,
-        measuredValueBefore: value,
+        afterDbfs: best_level,
+        appliedValue: best_value,
+        measuredValueBefore: original,
     }
 }
 
