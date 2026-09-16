@@ -77,7 +77,41 @@ describe("artifacts", () => {
         expect(analysis.artifact.channels).toBe(2)
         expect(analysis.artifact.frames).toBe(480)
         expect(analysis.artifact.sampleFormat).toBe("pcm_s16le")
+        expect(analysis.artifact.rmsDbfs).toBeNull()
+        expect(analysis.artifact.peakDbfs).toBeNull()
         expect(analysis.warnings).toHaveLength(1)
+    })
+
+    it("measures loudness of a non-silent WAV", async () => {
+        const directory = await tempDir()
+        const file_path = path.join(directory, "tone.wav")
+        const sample_rate = 48000
+        const frames = sample_rate / 2
+        const buffer = Buffer.alloc(44 + frames * 4)
+        buffer.write("RIFF", 0, "ascii")
+        buffer.writeUInt32LE(36 + frames * 4, 4)
+        buffer.write("WAVE", 8, "ascii")
+        buffer.write("fmt ", 12, "ascii")
+        buffer.writeUInt32LE(16, 16)
+        buffer.writeUInt16LE(1, 20)
+        buffer.writeUInt16LE(2, 22)
+        buffer.writeUInt32LE(sample_rate, 24)
+        buffer.writeUInt32LE(sample_rate * 4, 28)
+        buffer.writeUInt16LE(4, 32)
+        buffer.writeUInt16LE(16, 34)
+        buffer.write("data", 36, "ascii")
+        buffer.writeUInt32LE(frames * 4, 40)
+        for (let i = 0; i < frames; i++) {
+            const value = Math.round(0.5 * Math.sin((2 * Math.PI * 1000 * i) / sample_rate) * 32767)
+            buffer.writeInt16LE(value, 44 + i * 4)
+            buffer.writeInt16LE(value, 46 + i * 4)
+        }
+        await writeFile(file_path, buffer)
+
+        const analysis = await analyzeAudioFile(file_path)
+        expect(analysis.artifact.peakDbfs).toBeCloseTo(-6.02, 1)
+        expect(analysis.artifact.rmsDbfs).toBeCloseTo(-9.03, 1)
+        expect(analysis.warnings).toHaveLength(0)
     })
 
     it("parses an AIFF COMM chunk", async () => {
