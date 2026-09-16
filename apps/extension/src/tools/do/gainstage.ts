@@ -20,6 +20,7 @@ const POLL_INTERVAL_MS = 50
 const PLAY_TIMEOUT_MS = 10_000
 const STOP_TIMEOUT_MS = 10_000
 const MEASURE_OVERHEAD_MS = 5_000
+const MEASURE_SETTLE_MS = 800
 const MIN_PARAMETER_STEP = 1e-4
 const WRITE_TOLERANCE = 0.01
 const AUTO_CREST_THRESHOLD_DB = 12
@@ -106,6 +107,8 @@ export async function measureTrackMeter(
         await transport.seek(0)
         transport.play()
         await transport.waitForPlaying(PLAY_TIMEOUT_MS)
+        // メーターのリリース遅れで前の値が残るため、整定してから採取する。
+        await sleep(MEASURE_SETTLE_MS)
         const beats_per_second = before.tempo > 0 ? before.tempo / 60 : 2
         const deadline = Date.now() + (beats / beats_per_second) * 1000 + MEASURE_OVERHEAD_MS
         for (;;) {
@@ -228,6 +231,7 @@ async function convergeBisection(
             break
         }
         await setParameter(parameter, mid)
+        await sleep(MEASURE_SETTLE_MS)
         const level = (await measure())[metric]
         const effective = finite(level)
         if (Math.abs(effective - before_db) > tolerance) {
