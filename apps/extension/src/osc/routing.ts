@@ -130,6 +130,25 @@ export class OscRoutingAdapter {
         )
     }
 
+    /** トラック出力メーター（0..1 のリニア値）。 */
+    async getOutputMeterLevel(index: number): Promise<number> {
+        return expectTrackNumber(
+            await this.client.request(OSC_TRACK_ENDPOINTS.getOutputMeterLevel, [index]),
+        )
+    }
+
+    async getOutputMeterLeft(index: number): Promise<number> {
+        return expectTrackNumber(
+            await this.client.request(OSC_TRACK_ENDPOINTS.getOutputMeterLeft, [index]),
+        )
+    }
+
+    async getOutputMeterRight(index: number): Promise<number> {
+        return expectTrackNumber(
+            await this.client.request(OSC_TRACK_ENDPOINTS.getOutputMeterRight, [index]),
+        )
+    }
+
     async setArm(index: number, value: boolean): Promise<void> {
         this.client.send(OSC_TRACK_ENDPOINTS.setArm, [index, value ? 1 : 0])
         await converge(

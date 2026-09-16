@@ -115,6 +115,7 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
             listWriteEvents: async () => [],
             listRenderJobs: async () => [],
             readTransport: async () => null,
+            readMeters: async () => [],
         }
     }
 
@@ -248,6 +249,24 @@ export class LomGraphAdapter implements GraphAdapter<LomNode> {
                     properties: transport,
                 },
             ]
+        }
+        if (label === "Meter") {
+            const meters = await this.virtual_sources.readMeters()
+            return meters.map(
+                (meter): VirtualNode => ({
+                    type: "virtual",
+                    label: "Meter",
+                    id: String(meter.trackIndex),
+                    properties: {
+                        trackIndex: meter.trackIndex,
+                        trackName: meter.trackName,
+                        level: meter.level,
+                        left: meter.left,
+                        right: meter.right,
+                        observedAt: meter.observedAt,
+                    },
+                }),
+            )
         }
         throw new BadRequestError(
             `Label "${label}" cannot start a pattern. Usable start labels: ${startable_label_hint}. For labels such as Note, Parameter, ClipSlot, Mixer, Chain or TakeLane, start from a usable label and expand with relationships.`,

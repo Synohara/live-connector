@@ -34,6 +34,7 @@ export const startable_labels: string[] = [
     "WriteEvent",
     "RenderJob",
     "Transport",
+    "Meter",
 ]
 
 export const query_contract: QueryContract = {
@@ -196,6 +197,7 @@ export const query_contract: QueryContract = {
             "render ジョブ（id, status, source, method, phase, progress, audioStatus, cleanupStatus, filePath?, error?）— 読み取り専用",
         Transport:
             "Transport 状態（isPlaying, currentSongTime, tempo, recordMode, loop, loopStart, loopLength, punchIn, punchOut, observedAt）— 読み取り専用。切断後の古い値は返さない",
+        Meter: "通常トラックの出力メーター（trackIndex, trackName, level, left, right, observedAt）— 読み取り専用。level/left/right は 0..1 のリニア値。OSC 未接続時は 0 行",
     },
 }
 
@@ -391,6 +393,7 @@ export const EXAMPLE_QUERIES: string[] = [
     "MATCH (e:WriteEvent) RETURN e.id, e.statement, e.undoable, e.status",
     "MATCH (j:RenderJob) RETURN j.id, j.status, j.filePath",
     "MATCH (t:Transport) RETURN t.isPlaying, t.currentSongTime, t.tempo",
+    "MATCH (m:Meter) RETURN m.trackIndex, m.trackName, m.level, m.observedAt",
     "CALL transport.seek(32)",
     "CALL transport.play()",
     "CALL transport.stop()",

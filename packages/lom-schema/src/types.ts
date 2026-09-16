@@ -93,6 +93,7 @@ export type QueryContract = {
         WriteEvent: string
         RenderJob: string
         Transport: string
+        Meter: string
     }
 }
 

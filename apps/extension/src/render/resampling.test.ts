@@ -327,4 +327,31 @@ describe("Main capture", () => {
             runRender(deps, { ...baseParams(), preview: true } as never),
         ).rejects.toMatchObject({ code: "OSC_UNAVAILABLE" })
     })
+
+    it("reads the Meter virtual node", async () => {
+        const state = makeFakeOscState()
+        const { deps, live } = await buildDeps(state)
+        state.trackNamesSource = () => live.song.tracks.map((track) => track.name)
+        state.meter.set(0, 0.5)
+
+        const result = await runDoStatement(deps, {
+            statement: "MATCH (m:Meter) RETURN m.trackName, m.level",
+        })
+        expect(result.status).toBe("ok")
+        const rows = result.rows as Record<string, unknown>[]
+        expect(rows.some((row) => row["m.level"] === 0.5)).toBe(true)
+    })
+
+    it("returns no Meter rows when OSC is unavailable", async () => {
+        const storage = await mkdtemp(path.join(tmpdir(), "lc-capture-"))
+        const live = createFakeLive({ storageDirectory: storage })
+        const { HybridRuntime } = await import("../runtime/runtime")
+        const { loadEnv } = await import("@live-connector/env")
+        const runtime = new HybridRuntime(loadEnv({}), { ...log } as never)
+        const deps = { context: live.context, log, runtime } as unknown as ServerDeps
+
+        const result = await runDoStatement(deps, { statement: "MATCH (m:Meter) RETURN m" })
+        expect(result.status).toBe("ok")
+        expect(result.count).toBe(0)
+    })
 })
