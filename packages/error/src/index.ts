@@ -142,6 +142,19 @@ export class MethodNotAllowedError extends AppError {
     }
 }
 
+/** 認可されていない操作（トークン不一致・権限不足）。 */
+export class ForbiddenError extends AppError {
+    constructor(detail: string, metadata?: McpErrorMetadata) {
+        super({
+            type: `${ERROR_TYPE_BASE_URI}:forbidden`,
+            title: "Forbidden",
+            status: 403,
+            detail,
+            metadata,
+        })
+    }
+}
+
 /** Hybrid Runtime（OSC・Transport・実時間レンダー）の機械可読エラーコード。 */
 export type HybridErrorCode =
     | "TRANSPORT_BUSY"
@@ -164,6 +177,8 @@ export type HybridErrorCode =
     | "PROCEDURE_NOT_ALLOWED"
     | "CAPTURE_CANCELLED"
     | "RECORDING_LIMIT_EXCEEDED"
+    | "COMPANION_UNAVAILABLE"
+    | "COMPANION_SET_MISMATCH"
 
 /** Hybrid Runtime のエラー。コードで失敗種別を機械可読に伝える。 */
 export class HybridError extends AppError {
@@ -197,6 +212,8 @@ function errorCodeFor(error: AppError): string {
             return "not_found"
         case "MethodNotAllowedError":
             return "method_not_allowed"
+        case "ForbiddenError":
+            return "forbidden"
         default:
             return "application_error"
     }

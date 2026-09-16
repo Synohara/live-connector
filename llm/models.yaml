@@ -27,6 +27,9 @@ source_files:
         - "apps/extension/src/osc/protocol.ts"
         - "apps/extension/src/osc/transport.ts"
         - "apps/extension/src/osc/routing.ts"
+        - "apps/extension/src/companion/client.ts"
+        - "apps/extension/src/companion/protocol.ts"
+        - "apps/extension/src/companion/epoch.ts"
         - "apps/extension/src/types/hybrid.ts"
     tools:
         - "apps/extension/src/tools/common.ts"
@@ -63,6 +66,7 @@ source_files:
         - "apps/extension/src/render/capture-state.ts"
         - "apps/extension/src/render/artifacts.ts"
         - "apps/extension/src/render/journal.ts"
+        - "apps/extension/src/render/artifact-registry.ts"
     lom_adapter:
         - "apps/extension/src/lom/adapter.ts"
         - "apps/extension/src/lom/create-adapter.ts"
@@ -176,7 +180,7 @@ models:
           - name: "value"
             type: "semver"
             required: true
-            value: "3.1.0"
+            value: "3.3.0"
 
     - name: "Env"
       kind: "configuration"
@@ -234,6 +238,39 @@ models:
             type: "number"
             required: false
             default: 536870912
+          - name: "LIVE_CONNECTOR_COMPANION_ENABLED"
+            type: "boolean"
+            required: false
+            default: false
+          - name: "LIVE_CONNECTOR_COMPANION_HOST"
+            type: "string"
+            required: false
+            default: "127.0.0.1"
+            note: "loopback host のみ許可する。"
+          - name: "LIVE_CONNECTOR_COMPANION_PORT"
+            type: "number"
+            required: false
+            default: 11002
+          - name: "LIVE_CONNECTOR_COMPANION_HEARTBEAT_MS"
+            type: "number"
+            required: false
+            default: 1000
+          - name: "LIVE_CONNECTOR_COMPANION_TIMEOUT_MS"
+            type: "number"
+            required: false
+            default: 2000
+          - name: "LIVE_CONNECTOR_COMPANION_STALE_MS"
+            type: "number"
+            required: false
+            default: 10000
+          - name: "LIVE_CONNECTOR_ARTIFACT_DELIVERY_ENABLED"
+            type: "boolean"
+            required: false
+            default: true
+          - name: "LIVE_CONNECTOR_ARTIFACT_TOKEN_TTL_MS"
+            type: "number"
+            required: false
+            default: 3600000
 
     - name: "ServerDeps"
       kind: "dependency_container"
@@ -1813,6 +1850,9 @@ error_models:
         - name: "MethodNotAllowedError"
           status: 405
           type: "urn:live-connector:error:method-not-allowed"
+        - name: "ForbiddenError"
+          status: 403
+          type: "urn:live-connector:error:forbidden"
         - name: "HybridError"
           status: "constructor args（既定 409）"
           type: "urn:live-connector:error:hybrid"
@@ -1838,6 +1878,8 @@ error_models:
         - "PROCEDURE_NOT_ALLOWED"
         - "CAPTURE_CANCELLED"
         - "RECORDING_LIMIT_EXCEEDED"
+        - "COMPANION_UNAVAILABLE"
+        - "COMPANION_SET_MISMATCH"
     normalization:
         http:
             function: "toProblemDetails"

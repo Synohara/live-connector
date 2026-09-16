@@ -15,6 +15,16 @@ export type OscSettings = {
     timeoutMs: number
 }
 
+/** companion Remote Script 接続設定。 */
+export type CompanionSettings = {
+    enabled: boolean
+    host: string
+    port: number
+    heartbeatMs: number
+    timeoutMs: number
+    staleMs: number
+}
+
 /** render の取得元。旧 Pre-FX 経路と Main 実時間録音。 */
 export type RenderSource = "audio-track-pre-fx" | "main"
 
@@ -76,6 +86,7 @@ export type RenderJobRecord = {
     track?: { index: number; name: string; kind: "audio" }
     progress?: RenderProgress
     filePath?: string
+    artifactUrl?: string
     audio?: AudioArtifact
     requestId?: string
     planId?: string
@@ -157,7 +168,7 @@ export type CaptureTrackIdentity = {
 }
 
 /** OSC メッセージの引数。 */
-export type OscArg = string | number | boolean
+export type OscArg = string | number | boolean | null
 
 /** OSC 応答メッセージ。 */
 export type OscMessage = {

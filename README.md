@@ -97,6 +97,24 @@ MATCH (t:Transport) RETURN t.isPlaying, t.currentSongTime, t.tempo
 
 これらを使うには AbletonOSC を Remote Script として導入し、`LIVE_CONNECTOR_OSC_ENABLED=true` を設定します（既定は無効）。OSC を使わなくても他の機能は動作します。
 
+## 無人運用の保護（companion Remote Script）
+
+stock AbletonOSC だけでは、拡張プロセスが停止したときに Live の録音を止められません。`remote-scripts/LiveConnectorCompanion/` を Remote Scripts に配置し、Preferences → Link/Tempo/MIDI の Control Surface に追加すると、heartbeat 途絶時に transport 停止・`record_mode` off・録音トラック disarm・設定復旧を行います。
+
+- 拡張側は `LIVE_CONNECTOR_COMPANION_ENABLED=true` で接続します（既定は無効）。未導入でも他の機能は動作します。
+- 対象トラック検証と Set epoch 照合により別 Set への誤操作を抑止します。
+- 保証範囲: Live 正常稼働中の保護。Live 自体のクラッシュ、GUI・他クライアントの手動操作は保証しません。
+
+## 録音ファイルの取得（artifact URL）
+
+`render` の応答には `artifactUrl` が含まれます（`LIVE_CONNECTOR_ARTIFACT_DELIVERY_ENABLED`、既定有効）。loopback の job 単位トークン付き URL から録音ファイルを取得できます。
+
+```text
+http://127.0.0.1:7799/api/v1/artifacts/<jobId>/<token>
+```
+
+トークンは短命で、`filePath` と同様ローカル PC 向けです。任意のパスを読み出す API ではありません。
+
 ## Main 出力の録音（Hybrid）
 
 MIDI 楽器の実音や Main 上の EQ / Compressor / Limiter を通した完成信号を、Resampling 入力の実時間録音で取得します。`render` に `source:"main"` を渡します。

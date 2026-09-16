@@ -120,6 +120,15 @@ export function expectTrackString(message: OscMessage): string {
     return value
 }
 
+/** メーター値。OSC の Nil（無データ）は 0 として扱う。 */
+export function expectMeterNumber(message: OscMessage): number {
+    const value = message.args[1]
+    if (value === null || value === undefined) {
+        return 0
+    }
+    return toNumber(value, message)
+}
+
 /** トラック応答から index を除いた文字列引数リストを取り出す（routing 候補など）。 */
 export function expectTrackStringList(message: OscMessage): string[] {
     return toStringArgs(message.args.slice(1))
