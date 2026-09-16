@@ -411,7 +411,7 @@ class MainCaptureJob {
             )
         }
 
-        await this.assertNoArmedTracks(osc_index)
+        await this.assertNoArmedTracks()
 
         this.before = await this.readBeforeState()
         await this.persistJournal()
@@ -463,16 +463,17 @@ class MainCaptureJob {
     }
 
     /** 手動 Arm された他トラックがある Set は MVP では拒否する（Auto monitoring 変化を検証できないため）。 */
-    private async assertNoArmedTracks(capture_index: number): Promise<void> {
-        const names = await this.routing.listTrackNames()
-        for (const index of names.keys()) {
-            if (index === capture_index) {
+    private async assertNoArmedTracks(): Promise<void> {
+        // OSC の get/arm は環境により Nil を返すため、SDK の arm を正とする。
+        const song = this.deps.context.application.song
+        for (const track of song.tracks) {
+            if (this.capture_track !== null && track.handle.id === this.capture_track.handle.id) {
                 continue
             }
-            if (await this.routing.getArm(index)) {
+            if (track.arm) {
                 throw new HybridError(
                     "ARM_CONFLICT",
-                    `Track ${index} "${names[index] ?? ""}" is armed; disarm other tracks before a Main capture`,
+                    `Track "${track.name}" is armed; disarm other tracks before a Main capture`,
                 )
             }
         }
