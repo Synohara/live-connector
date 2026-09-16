@@ -17,10 +17,10 @@ Live 自体がクラッシュした場合は救済しない（設計書 §9.1）
 
 AbletonOSC と同様、Remote Scripts フォルダへ配置する。
 
-- macOS: `~/Music/Ableton/User Library/Remote Scripts/live-connector-companion/`
-- Windows: `\Users\[username]\Documents\Ableton\User Library\Remote Scripts\live-connector-companion\`
+- macOS: `~/Music/Ableton/User Library/Remote Scripts/LiveConnectorCompanion/`
+- Windows: `\Users\[username]\Documents\Ableton\User Library\Remote Scripts\LiveConnectorCompanion\`
 
-その後、Live の Preferences → Link/Tempo/MIDI → Control Surface に `live-connector-companion` を追加する（Input/Output は None）。Live 起動時に
+その後、Live の Preferences → Link/Tempo/MIDI → Control Surface に `LiveConnectorCompanion` を追加する（Input/Output は None）。Live 起動時に
 `live-connector companion listening on 127.0.0.1:11002` が表示されれば起動している。
 
 拡張側は `LIVE_CONNECTOR_COMPANION_ENABLED=true` で接続する（既定は無効）。

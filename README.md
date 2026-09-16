@@ -99,7 +99,7 @@ MATCH (t:Transport) RETURN t.isPlaying, t.currentSongTime, t.tempo
 
 ## 無人運用の保護（companion Remote Script）
 
-stock AbletonOSC だけでは、拡張プロセスが停止したときに Live の録音を止められません。`remote-scripts/live-connector-companion/` を Remote Scripts に配置し、Preferences → Link/Tempo/MIDI の Control Surface に追加すると、heartbeat 途絶時に transport 停止・`record_mode` off・録音トラック disarm・設定復旧を行います。
+stock AbletonOSC だけでは、拡張プロセスが停止したときに Live の録音を止められません。`remote-scripts/LiveConnectorCompanion/` を Remote Scripts に配置し、Preferences → Link/Tempo/MIDI の Control Surface に追加すると、heartbeat 途絶時に transport 停止・`record_mode` off・録音トラック disarm・設定復旧を行います。
 
 - 拡張側は `LIVE_CONNECTOR_COMPANION_ENABLED=true` で接続します（既定は無効）。未導入でも他の機能は動作します。
 - 対象トラック検証と Set epoch 照合により別 Set への誤操作を抑止します。
