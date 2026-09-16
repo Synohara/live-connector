@@ -18,6 +18,7 @@ type V = TargetApiVersion
 
 const POLL_INTERVAL_MS = 50
 const PLAY_TIMEOUT_MS = 10_000
+const STOP_TIMEOUT_MS = 10_000
 const MEASURE_OVERHEAD_MS = 5_000
 const MIN_PARAMETER_STEP = 1e-4
 const WRITE_TOLERANCE = 0.01
@@ -84,10 +85,18 @@ export async function measureTrackMeter(
     const routing = deps.runtime.requireRouting()
     const before = await transport.readState()
     if (before.isPlaying || before.recordMode) {
-        throw new HybridError(
-            "TRANSPORT_BUSY",
-            "Stop playback and recording before measuring levels",
-        )
+        // 計測は Transport を占有する。再生中なら停止・録音解除してから計測する。
+        try {
+            transport.stop()
+            await transport.waitForStopped(STOP_TIMEOUT_MS)
+        } catch (error) {
+            deps.log.warn("measure pre-stop failed", { error: String(error) })
+        }
+        try {
+            await transport.setRecordMode(false)
+        } catch (error) {
+            deps.log.warn("measure record_mode clear failed", { error: String(error) })
+        }
     }
     const samples: number[] = []
     try {
