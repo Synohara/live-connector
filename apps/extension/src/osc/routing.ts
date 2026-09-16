@@ -7,6 +7,7 @@
 import { HybridError, NotFoundError } from "@live-connector/error"
 import type { OscClient } from "./client"
 import {
+    expectMeterNumber,
     expectSendNumber,
     expectTrackBoolean,
     expectTrackNumber,
@@ -132,19 +133,19 @@ export class OscRoutingAdapter {
 
     /** トラック出力メーター（0..1 のリニア値）。 */
     async getOutputMeterLevel(index: number): Promise<number> {
-        return expectTrackNumber(
+        return expectMeterNumber(
             await this.client.request(OSC_TRACK_ENDPOINTS.getOutputMeterLevel, [index]),
         )
     }
 
     async getOutputMeterLeft(index: number): Promise<number> {
-        return expectTrackNumber(
+        return expectMeterNumber(
             await this.client.request(OSC_TRACK_ENDPOINTS.getOutputMeterLeft, [index]),
         )
     }
 
     async getOutputMeterRight(index: number): Promise<number> {
-        return expectTrackNumber(
+        return expectMeterNumber(
             await this.client.request(OSC_TRACK_ENDPOINTS.getOutputMeterRight, [index]),
         )
     }
