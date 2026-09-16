@@ -165,6 +165,7 @@ sequenceDiagram
 | method | path | 認証 | 用途 |
 | --- | --- | --- | --- |
 | `GET` | `/health` | なし | `application/health+json` のヘルスチェック |
+| `GET` | `/api/v1/artifacts/<jobId>/<token>` | loopback Host / Origin + job トークン | 確定した artifact の配信 |
 | `POST` | `/api/v1/mcp` | loopback Host / Origin header 検証 | Streamable HTTP MCP endpoint |
 
 ## MCP ツール
@@ -330,6 +331,12 @@ sequenceDiagram
 ```
 
 `packages/cypher` は CALL を構文解析するだけで SDK に依存しない。許可手続きの登録・型検査は Extension 側（`runtime/procedures.ts`）で行い、Transport は OSC、`render.cancel` は録音ジョブの cancel 受理を担う。
+
+## companion Remote Script と artifact 提供
+
+- companion（`remote-scripts/live-connector-companion/`, Live Python）は loopback TCP（既定 11002）+ JSON 行で拡張と通信し、heartbeat 期限・録音範囲上限・対象トラック検証・Set epoch 照合・停止後の安全化を担う。拡張側は `apps/extension/src/companion/` のクライアントを activation 単位で保持し、Main 実行中に heartbeat を送る。未接続でも従来機能は動作し、`meta` の `runtime.companion` に理由を返す。
+- 同一 Set 判定は SDK handle と Live Python handle が別物のため、通常トラック名の並びを djb2 でハッシュして比較する（`companion/epoch.ts` と Python 側で同一実装）。
+- artifact 提供（`render/artifact-registry.ts`）は確定ファイルを job 単位トークン付きで loopback HTTP `GET /api/v1/artifacts/<jobId>/<token>` から配信する。パスはレジストリ由来のみで、任意パスは読めない。
 
 ## データ所有
 
