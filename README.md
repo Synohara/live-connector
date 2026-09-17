@@ -52,7 +52,7 @@ v3.0.0 では MCP ツールが 4 つに統合されています。推奨フロ�
 | 動詞 | ツール | できること |
 | --- | --- | --- |
 | 入口 | `meta` | サービス情報、LOM スキーマ、Cypher 文法契約、CALL 手続き、capabilities、例文、Live Set overview |
-| 見る・変える | `do` | Cypher で読み取り（MATCH … RETURN）と書き込み（SET / CREATE / DELETE / COPY）、Transport 手続き（CALL） |
+| 見る・変える | `do` | Cypher で読み取り（MATCH … RETURN、仮想ラベル `Meter` 等）と書き込み（SET / CREATE / DELETE / COPY）、Transport 手続きとゲインステージング（CALL） |
 | 聴く | `render` | AudioTrack の Pre-FX レンダリング、または Main 出力の実時間録音（`source:"main"`） |
 | 戻す | `undo` | do 書き込みの取り消し（LIFO）。履歴は `do` read の `WriteEvent` 仮想ラベルで照会 |
 
@@ -96,6 +96,34 @@ MATCH (t:Transport) RETURN t.isPlaying, t.currentSongTime, t.tempo
 ```
 
 これらを使うには AbletonOSC を Remote Script として導入し、`LIVE_CONNECTOR_OSC_ENABLED=true` を設定します（既定は無効）。OSC を使わなくても他の機能は動作します。
+
+## レベル計測とゲインステージング（AbletonOSC）
+
+トラックの出力メーターを仮想ラベル `Meter` で読み取れます（通常トラックのみ、停止中は 0）。
+
+```cypher
+MATCH (m:Meter) RETURN m.trackIndex, m.trackName, m.level, m.observedAt
+```
+
+`CALL` でレベルを測り、トラック volume・デバイス Output・Main を目標へ収束させられます（`confirm:true` 必須）。測定は実時間再生を伴い、曲の内容に依存します。
+
+```cypher
+CALL gainstage.measure("Drums", 8)
+```
+
+```cypher
+CALL gainstage.track("Drums", -18)
+```
+
+```cypher
+CALL gainstage.device("Drums", "Utility", -18)
+```
+
+```cypher
+CALL gainstage.main("vu", -18, 8)
+```
+
+レンダリング結果（`render`）には VU 相当の RMS dBFS と sample peak dBFS が `audio` に含まれます。収束しなかった場合は `status:"not_converged"` と実測値を返し、成功とは報告しません。
 
 ## Main 出力の録音（Hybrid）
 

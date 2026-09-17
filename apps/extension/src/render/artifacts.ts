@@ -1,7 +1,8 @@
 /**
  * 録音済みファイルの検証と artifact 確定。
  * 一時ファイルへコピーし、検証後に rename して確定する。
- * sample rate / channels / frames / format / SHA-256 を実測して記録する。
+ * sample rate / channels / frames / format / SHA-256 と
+ * RMS / sample peak / integrated LUFS を実測して記録する。
  */
 
 import { createHash } from "node:crypto"
@@ -10,6 +11,7 @@ import path from "node:path"
 import { HybridError } from "@live-connector/error"
 import type { ServerDeps } from "../deps"
 import type { AudioArtifact } from "../types/hybrid"
+import { computeLevels } from "./levels"
 
 const RENDERS_DIRECTORY_NAME = "renders"
 
@@ -49,11 +51,92 @@ function decodeExtended80(bytes: Buffer): number {
     return sign * mantissa * 2 ** (exponent - 16383 - 63)
 }
 
+function readInt24LE(buffer: Buffer, offset: number): number {
+    const value =
+        (buffer[offset] ?? 0) | ((buffer[offset + 1] ?? 0) << 8) | ((buffer[offset + 2] ?? 0) << 16)
+    return value & 0x800000 ? value - 0x1000000 : value
+}
+
+function readInt24BE(buffer: Buffer, offset: number): number {
+    const value =
+        ((buffer[offset] ?? 0) << 16) | ((buffer[offset + 1] ?? 0) << 8) | (buffer[offset + 2] ?? 0)
+    return value & 0x800000 ? value - 0x1000000 : value
+}
+
 function sampleFormatFor(format_code: number, bits: number): string {
     if (format_code === 3) {
         return bits === 64 ? "pcm_f64le" : "pcm_f32le"
     }
     return `pcm_s${bits}le`
+}
+
+function decodeWav(
+    buffer: Buffer,
+    format_code: number,
+    bits: number,
+    channels: number,
+    data_offset: number,
+    data_size: number,
+): Float32Array[] {
+    const bytes_per_sample = bits / 8
+    const frame_bytes = bytes_per_sample * channels
+    const frames = Math.floor(data_size / frame_bytes)
+    const out = Array.from({ length: channels }, () => new Float32Array(frames))
+    for (let frame = 0; frame < frames; frame++) {
+        const base = data_offset + frame * frame_bytes
+        for (let channel = 0; channel < channels; channel++) {
+            const pointer = base + channel * bytes_per_sample
+            let value = 0
+            if (format_code === 3) {
+                value = bits === 64 ? buffer.readDoubleLE(pointer) : buffer.readFloatLE(pointer)
+            } else if (bits === 16) {
+                value = buffer.readInt16LE(pointer) / 32768
+            } else if (bits === 24) {
+                value = readInt24LE(buffer, pointer) / 8388608
+            } else if (bits === 32) {
+                value = buffer.readInt32LE(pointer) / 2147483648
+            }
+            const target = out[channel]
+            if (target !== undefined) {
+                target[frame] = value
+            }
+        }
+    }
+    return out
+}
+
+function decodeAiff(
+    buffer: Buffer,
+    bits: number,
+    channels: number,
+    ssnd_offset: number,
+    ssnd_size: number,
+): Float32Array[] {
+    const start = ssnd_offset + 8
+    const usable = Math.max(0, Math.min(ssnd_size - 8, buffer.length - start))
+    const bytes_per_sample = bits / 8
+    const frame_bytes = bytes_per_sample * channels
+    const frames = Math.floor(usable / frame_bytes)
+    const out = Array.from({ length: channels }, () => new Float32Array(frames))
+    for (let frame = 0; frame < frames; frame++) {
+        const base = start + frame * frame_bytes
+        for (let channel = 0; channel < channels; channel++) {
+            const pointer = base + channel * bytes_per_sample
+            let value = 0
+            if (bits === 16) {
+                value = buffer.readInt16BE(pointer) / 32768
+            } else if (bits === 24) {
+                value = readInt24BE(buffer, pointer) / 8388608
+            } else if (bits === 32) {
+                value = buffer.readInt32BE(pointer) / 2147483648
+            }
+            const target = out[channel]
+            if (target !== undefined) {
+                target[frame] = value
+            }
+        }
+    }
+    return out
 }
 
 async function analyzeWav(buffer: Buffer): Promise<AudioAnalysis | null> {
@@ -96,13 +179,13 @@ async function analyzeWav(buffer: Buffer): Promise<AudioAnalysis | null> {
         throw new HybridError("AUDIO_ARTIFACT_INVALID", "WAV file is missing a valid fmt chunk")
     }
     const frames = Math.floor(data_size / block_align)
-    const warnings: string[] = []
     if (data_size === 0) {
         throw new HybridError("AUDIO_ARTIFACT_INVALID", "WAV file contains no audio data")
     }
-    if (isSilent(buffer.subarray(data_offset, data_offset + data_size))) {
-        warnings.push("all samples are silent; check track routing and mute state")
-    }
+    const levels = computeLevels(
+        decodeWav(buffer, format_code, bits, channels, data_offset, data_size),
+        sample_rate,
+    )
     return {
         artifact: {
             sampleRate: sample_rate,
@@ -111,8 +194,9 @@ async function analyzeWav(buffer: Buffer): Promise<AudioAnalysis | null> {
             sha256: "", // finalizeArtifact で確定する
             durationSeconds: framesToDuration(frames, sample_rate),
             sampleFormat: sampleFormatFor(format_code, bits),
+            ...levels,
         },
-        warnings,
+        warnings: warningsFor(levels),
     }
 }
 
@@ -130,6 +214,8 @@ async function analyzeAiff(buffer: Buffer): Promise<AudioAnalysis | null> {
     let bits = 0
     let sample_rate = 0
     let found_comm = false
+    let ssnd_offset = -1
+    let ssnd_size = 0
 
     while (offset + 8 <= buffer.length) {
         const chunk_id = buffer.toString("ascii", offset, offset + 4)
@@ -141,6 +227,9 @@ async function analyzeAiff(buffer: Buffer): Promise<AudioAnalysis | null> {
             bits = buffer.readInt16BE(body + 6)
             sample_rate = Math.round(decodeExtended80(buffer.subarray(body + 8, body + 18)))
             found_comm = true
+        } else if (chunk_id === "SSND") {
+            ssnd_offset = body
+            ssnd_size = chunk_size
         }
         offset = body + chunk_size + (chunk_size % 2)
     }
@@ -148,6 +237,10 @@ async function analyzeAiff(buffer: Buffer): Promise<AudioAnalysis | null> {
     if (!found_comm || channels <= 0 || sample_rate <= 0) {
         throw new HybridError("AUDIO_ARTIFACT_INVALID", "AIFF file is missing a valid COMM chunk")
     }
+    const levels =
+        ssnd_offset >= 0
+            ? computeLevels(decodeAiff(buffer, bits, channels, ssnd_offset, ssnd_size), sample_rate)
+            : { rmsDbfs: null, peakDbfs: null }
     return {
         artifact: {
             sampleRate: sample_rate,
@@ -156,18 +249,17 @@ async function analyzeAiff(buffer: Buffer): Promise<AudioAnalysis | null> {
             sha256: "",
             durationSeconds: framesToDuration(frames, sample_rate),
             sampleFormat: `pcm_s${bits}be`,
+            ...levels,
         },
-        warnings: [],
+        warnings: warningsFor(levels),
     }
 }
 
-function isSilent(data: Buffer): boolean {
-    for (const byte of data) {
-        if (byte !== 0) {
-            return false
-        }
+function warningsFor(levels: { peakDbfs: number | null }): string[] {
+    if (levels.peakDbfs === null) {
+        return ["all samples are silent; check track routing and mute state"]
     }
-    return true
+    return []
 }
 
 /** ファイルを読み、コンテナと音声メタデータを実測する。 */
@@ -251,6 +343,12 @@ export async function finalizeArtifact(
         "utf8",
     )
     return { filePath: final_path, audio, warnings: analysis.warnings }
+}
+
+/** 中間ファイル（artifact へ確定しないファイル）の音声メタデータを解析する。 */
+export async function analyzeIntermediate(file_path: string): Promise<AudioArtifact> {
+    const analysis = await analyzeAudioFile(file_path)
+    return analysis.artifact
 }
 
 /** storageDirectory が利用可能かを検査する。 */

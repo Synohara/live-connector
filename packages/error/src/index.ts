@@ -164,6 +164,7 @@ export type HybridErrorCode =
     | "PROCEDURE_NOT_ALLOWED"
     | "CAPTURE_CANCELLED"
     | "RECORDING_LIMIT_EXCEEDED"
+    | "GAINSTAGE_NOT_CONVERGED"
 
 /** Hybrid Runtime のエラー。コードで失敗種別を機械可読に伝える。 */
 export class HybridError extends AppError {

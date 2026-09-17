@@ -26,6 +26,7 @@ export type FakeOscState = {
     arm: Map<number, boolean>
     monitoring: Map<number, number>
     playingSlot: Map<number, number>
+    meter: Map<number, number>
     inputRouting: Map<number, string>
     outputRouting: Map<number, string>
     availableInputRouting: string[]
@@ -59,6 +60,7 @@ export function makeFakeOscState(partial: Partial<FakeOscState> = {}): FakeOscSt
         arm: new Map(),
         monitoring: new Map(),
         playingSlot: new Map(),
+        meter: new Map(),
         inputRouting: new Map(),
         outputRouting: new Map(),
         availableInputRouting: ["Resampling", "Ext. In"],
@@ -180,6 +182,14 @@ export function buildFakeOscTransport(
                 reply({
                     address: message.address,
                     args: [index, state.playingSlot.get(index) ?? -1],
+                })
+                return
+            case OSC_TRACK_ENDPOINTS.getOutputMeterLevel:
+            case OSC_TRACK_ENDPOINTS.getOutputMeterLeft:
+            case OSC_TRACK_ENDPOINTS.getOutputMeterRight:
+                reply({
+                    address: message.address,
+                    args: [index, state.meter.get(index) ?? 0],
                 })
                 return
             case OSC_TRACK_ENDPOINTS.setArm:

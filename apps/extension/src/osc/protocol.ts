@@ -51,6 +51,9 @@ export const OSC_TRACK_ENDPOINTS = {
     getArm: "/live/track/get/arm",
     setArm: "/live/track/set/arm",
     getPlayingSlotIndex: "/live/track/get/playing_slot_index",
+    getOutputMeterLevel: "/live/track/get/output_meter_level",
+    getOutputMeterLeft: "/live/track/get/output_meter_left",
+    getOutputMeterRight: "/live/track/get/output_meter_right",
     getMonitoringState: "/live/track/get/current_monitoring_state",
     setMonitoringState: "/live/track/set/current_monitoring_state",
     getAvailableInputRoutingTypes: "/live/track/get/available_input_routing_types",
@@ -118,6 +121,15 @@ export function expectTrackString(message: OscMessage): string {
         throw new BadRequestError(`${describe(message)} did not contain a string value`)
     }
     return value
+}
+
+/** メーター値。OSC の Nil（無データ）は 0 として扱う。 */
+export function expectMeterNumber(message: OscMessage): number {
+    const value = message.args[1]
+    if (value === null || value === undefined) {
+        return 0
+    }
+    return toNumber(value, message)
 }
 
 /** トラック応答から index を除いた文字列引数リストを取り出す（routing 候補など）。 */

@@ -14,6 +14,9 @@ export type CapabilitiesInput = {
     maxArtifactBytes: number
     validationLevel: CaptureValidationLevel
     validationId: string | undefined
+    gainstageMeasureBeats: number
+    gainstageMaxIterations: number
+    gainstageToleranceDb: number
 }
 
 /** `render.mainOutput` の能力記述。 */
@@ -43,6 +46,15 @@ export type RuntimeCapabilities = {
     maxArtifactBytes: number
     validationLevel: CaptureValidationLevel
     validationId?: string
+    meter: { available: boolean; method: "abletonosc-output-meter"; reason?: string }
+    gainstage: {
+        available: boolean
+        metrics: ["vu", "peak"]
+        targets: ["track-volume", "device-output", "main"]
+        measureBeats: number
+        maxIterations: number
+        toleranceDb: number
+    }
 }
 
 export function buildRenderCapabilities(input: CapabilitiesInput): RenderCapabilities {
@@ -70,6 +82,13 @@ export function buildRuntimeCapabilities(input: CapabilitiesInput): RuntimeCapab
     if (!input.oscConnected) {
         osc.reason = input.oscReason ?? "AbletonOSC is not connected"
     }
+    const meter: RuntimeCapabilities["meter"] = {
+        available: input.oscConnected,
+        method: "abletonosc-output-meter",
+    }
+    if (!input.oscConnected) {
+        meter.reason = input.oscReason ?? "AbletonOSC is not connected"
+    }
     return {
         osc,
         capturePairing: "verified-on-job-start",
@@ -78,5 +97,14 @@ export function buildRuntimeCapabilities(input: CapabilitiesInput): RuntimeCapab
         maxArtifactBytes: input.maxArtifactBytes,
         validationLevel: input.validationLevel,
         ...(input.validationId !== undefined ? { validationId: input.validationId } : {}),
+        meter,
+        gainstage: {
+            available: input.oscConnected,
+            metrics: ["vu", "peak"],
+            targets: ["track-volume", "device-output", "main"],
+            measureBeats: input.gainstageMeasureBeats,
+            maxIterations: input.gainstageMaxIterations,
+            toleranceDb: input.gainstageToleranceDb,
+        },
     }
 }

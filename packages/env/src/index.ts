@@ -21,6 +21,9 @@ const DEFAULT_OSC_TIMEOUT_MS = 1500
 const DEFAULT_PLAN_TTL_MS = 60_000
 const DEFAULT_MAX_CAPTURE_BEATS = 2048
 const DEFAULT_MAX_ARTIFACT_BYTES = 536_870_912
+const DEFAULT_GAINSTAGE_MEASURE_BEATS = 8
+const DEFAULT_GAINSTAGE_MAX_ITERATIONS = 8
+const DEFAULT_GAINSTAGE_TOLERANCE_DB = 0.5
 
 function normalizeHost(host: string): string {
     const normalized_host = host.trim().toLowerCase()
@@ -80,6 +83,23 @@ const env_schema = z.object({
         .int()
         .positive()
         .default(DEFAULT_MAX_ARTIFACT_BYTES),
+    LIVE_CONNECTOR_GAINSTAGE_MEASURE_BEATS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(1024)
+        .default(DEFAULT_GAINSTAGE_MEASURE_BEATS),
+    LIVE_CONNECTOR_GAINSTAGE_MAX_ITERATIONS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(20)
+        .default(DEFAULT_GAINSTAGE_MAX_ITERATIONS),
+    LIVE_CONNECTOR_GAINSTAGE_TOLERANCE_DB: z.coerce
+        .number()
+        .positive()
+        .max(12)
+        .default(DEFAULT_GAINSTAGE_TOLERANCE_DB),
 })
 
 export type Env = z.infer<typeof env_schema>

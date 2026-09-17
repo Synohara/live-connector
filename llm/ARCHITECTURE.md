@@ -202,7 +202,7 @@ sequenceDiagram
     do-->>client: { status:ok, count, rows, truncated? }
 ```
 
-`packages/cypher` は SDK 非依存の `GraphAdapter<N>` 越しにグラフを評価する。`LomGraphAdapter` は Ableton SDK オブジェクトを `LomNode` として包み、LOM schema に定義されたラベルとプロパティへ変換する。`create-adapter.ts` は仮想ラベル `WriteEvent`（undo ログ）と `RenderJob`（render ジョブ）を query 可能にする。
+`packages/cypher` は SDK 非依存の `GraphAdapter<N>` 越しにグラフを評価する。`LomGraphAdapter` は Ableton SDK オブジェクトを `LomNode` として包み、LOM schema に定義されたラベルとプロパティへ変換する。`create-adapter.ts` は仮想ラベル `WriteEvent`（undo ログ）/ `RenderJob`（render ジョブ）/ `Transport`（Transport 状態）/ `Meter`（通常トラックの出力メーター）を query 可能にする。
 
 ## 書き込みフロー
 
@@ -331,6 +331,13 @@ sequenceDiagram
 
 `packages/cypher` は CALL を構文解析するだけで SDK に依存しない。許可手続きの登録・型検査は Extension 側（`runtime/procedures.ts`）で行い、Transport は OSC、`render.cancel` は録音ジョブの cancel 受理を担う。
 
+## Meter とゲインステージング
+
+- `Meter` 仮想ノード（`lom/create-adapter.ts`）は AbletonOSC の `output_meter_level/left/right` を通常トラックについて返す（`level` は 0..1 のリニア値、OSC 未接続時は 0 行）。
+- `gainstage.measure` は再生してライブメーターを区間ポーリングし、VU(RMS)/PEAK を返す（再生位置・loop・punch は復旧）。`gainstage.track` / `gainstage.device` はこの指標を目標へ収束させ、`gainstage.main` は Main 捕捉（`captureMainSync`）の RMS/PEAK を目標へ収束させる。
+- ミキサー volume は 0..1 の正規化値で dB 直ではないため、実測の傾き（dB/単位）から収束させる（`tools/do/gainstage.ts`）。収束しない場合は成功と偽らず `GAINSTAGE_NOT_CONVERGED` / `status:"not_converged"` を返す。
+- artifact 解析（`render/levels.ts`）は WAV/AIFF をデコードして RMS(VU) と sample peak を算出し、`render` の `audio` / manifest に記録する。
+
 ## データ所有
 
 ```mermaid
@@ -368,4 +375,5 @@ flowchart LR
 - AbletonOSC の track 系 getter は応答先頭に track_index を付けて返す（例: `[index, value]`）。requestId が無いため address 単位で直列化し、Timeout は「未適用」ではなく「適用状況不明」として `OSC_WRITE_UNCERTAIN` で扱う。
 - Main 録音は一時 AudioTrack と loop / punch / record_mode / Transport を変更するため、`render` の annotations は保守的に `readOnlyHint:false` / `destructiveHint:true` / `idempotentHint:false` とする。
 - Main 録音は実時間で CPU 負荷の影響を受け、外部クロック・テンポ変化・外部入力依存・無人運用は対応範囲外。実機検証前は `validationLevel:"unverified"`。
-- OSC を無効にしても従来の SDK 機能は動作する。`Transport` 仮想ノードは OSC 未接続時 0 行を返し、古い値を現在値として返さない。
+- OSC を無効にしても従来の SDK 機能は動作する。`Transport` / `Meter` 仮想ノードは OSC 未接続時 0 行を返し、古い値を現在値として返さない。
+- ゲインステージングのポストフェーダ測定は AbletonOSC のトラックメーター（1 値、ピーク寄り）のみ。VU/PEAK を厳密に分けられるのは Main 捕捉（`gainstage.main`）経由。true peak・LUFS は未実装。

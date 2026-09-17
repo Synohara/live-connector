@@ -38,6 +38,7 @@ source_files:
         - "apps/extension/src/tools/do/delete.ts"
         - "apps/extension/src/tools/do/copy.ts"
         - "apps/extension/src/tools/do/call.ts"
+        - "apps/extension/src/tools/do/gainstage.ts"
         - "apps/extension/src/tools/do/schemas.ts"
         - "apps/extension/src/tools/do/write-support.ts"
         - "apps/extension/src/tools/do/arrangement-edit.ts"
@@ -63,6 +64,7 @@ source_files:
         - "apps/extension/src/render/capture-state.ts"
         - "apps/extension/src/render/artifacts.ts"
         - "apps/extension/src/render/journal.ts"
+        - "apps/extension/src/render/levels.ts"
     lom_adapter:
         - "apps/extension/src/lom/adapter.ts"
         - "apps/extension/src/lom/create-adapter.ts"
@@ -176,7 +178,7 @@ models:
           - name: "value"
             type: "semver"
             required: true
-            value: "3.1.0"
+            value: "3.2.0"
 
     - name: "Env"
       kind: "configuration"
@@ -234,6 +236,19 @@ models:
             type: "number"
             required: false
             default: 536870912
+          - name: "LIVE_CONNECTOR_GAINSTAGE_MEASURE_BEATS"
+            type: "number"
+            required: false
+            default: 8
+            note: "ゲインステージングの測定窓（拍）。"
+          - name: "LIVE_CONNECTOR_GAINSTAGE_MAX_ITERATIONS"
+            type: "number"
+            required: false
+            default: 4
+          - name: "LIVE_CONNECTOR_GAINSTAGE_TOLERANCE_DB"
+            type: "number"
+            required: false
+            default: 0.5
 
     - name: "ServerDeps"
       kind: "dependency_container"
@@ -1253,7 +1268,7 @@ tool_support_models:
             type: "string"
             required: false
           - name: "audio"
-            type: "AudioArtifact（sampleRate, channels, frames, sha256, durationSeconds, sampleFormat）"
+            type: "AudioArtifact（sampleRate, channels, frames, sha256, durationSeconds, sampleFormat, rmsDbfs?（VU）, peakDbfs?（sample peak））"
             required: false
           - name: "requestId"
             type: "string"
@@ -1483,6 +1498,7 @@ lom_graph:
             - "WriteEvent"
             - "RenderJob"
             - "Transport"
+            - "Meter"
     labels:
         - label: "Song"
           description: "Live Set のルート。"
@@ -1650,6 +1666,16 @@ lom_graph:
               - { name: "punchOut", type: "boolean", access: "r" }
               - { name: "backToArranger", type: "boolean", access: "r" }
               - { name: "observedAt", type: "string", access: "r" }
+        - label: "Meter"
+          virtual: true
+          description: "通常トラックの出力メーター（読み取り専用）。AbletonOSC の output_meter_level/left/right。level/left/right は 0..1 のリニア値。OSC 未接続時は 0 行。"
+          properties:
+              - { name: "trackIndex", type: "number", access: "r" }
+              - { name: "trackName", type: "string", access: "r" }
+              - { name: "level", type: "number", access: "r" }
+              - { name: "left", type: "number", access: "r" }
+              - { name: "right", type: "number", access: "r" }
+              - { name: "observedAt", type: "string", access: "r" }
         - label: "TakeLane"
           properties:
               - { name: "index", type: "number", access: "r" }
@@ -1711,7 +1737,8 @@ cypher_contract:
             - "WriteEvent"
             - "RenderJob"
             - "Transport"
-        note: "WriteEvent / RenderJob / Transport は仮想ラベル（読み取り専用）。Note / Parameter / ClipSlot などは通常の起点にできないが relationship で辿れる。"
+            - "Meter"
+        note: "WriteEvent / RenderJob / Transport / Meter は仮想ラベル（読み取り専用）。Note / Parameter / ClipSlot などは通常の起点にできないが relationship で辿れる。"
     read_return_contract:
         tool: "do"
         allowed:
@@ -1770,6 +1797,10 @@ cypher_contract:
             - { name: "transport.stop", args: "", effect: "runtime", undoable: "none", requires_confirm: true }
             - { name: "transport.seek", args: "beats:number", effect: "runtime", undoable: "none", requires_confirm: true }
             - { name: "render.cancel", args: "jobId:string", effect: "runtime", undoable: "none", requires_confirm: true }
+            - { name: "gainstage.measure", args: "trackName:string, beats:number", effect: "runtime", undoable: "none", requires_confirm: true }
+            - { name: "gainstage.track", args: "trackName:string, targetDb:number", effect: "runtime", undoable: "none", requires_confirm: true }
+            - { name: "gainstage.device", args: "trackName:string, deviceName:string, targetDb:number", effect: "runtime", undoable: "none", requires_confirm: true }
+            - { name: "gainstage.main", args: "metric:string(vu|peak), targetDb:number, beats:number", effect: "runtime", undoable: "none", requires_confirm: true }
         guards:
             literals_only: "引数はリテラルのみ。式・変数・動的関数名・複文は拒否する。"
             preview: "preview:true は OSC 送信を含め副作用ゼロ。"
@@ -1838,6 +1869,7 @@ error_models:
         - "PROCEDURE_NOT_ALLOWED"
         - "CAPTURE_CANCELLED"
         - "RECORDING_LIMIT_EXCEEDED"
+        - "GAINSTAGE_NOT_CONVERGED"
     normalization:
         http:
             function: "toProblemDetails"

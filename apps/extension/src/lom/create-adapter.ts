@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@ableton-extensions/sdk"
 import type { ScalarValue } from "@live-connector/cypher"
 import type { ServerDeps, TargetApiVersion } from "../deps"
 import { listRenderJobs } from "../render/jobs"
+import type { MeterSummary } from "../types/hybrid"
 import { listWriteEventsForQuery } from "../undo/log"
 import { LomGraphAdapter } from "./adapter"
 
@@ -41,6 +42,8 @@ export type VirtualLabelSources = {
     listRenderJobs: () => Promise<RenderJobSummary[]>
     /** OSC 未接続・状態取得失敗時は null（古い値を現在値として返さない）。 */
     readTransport: () => Promise<TransportSummary | null>
+    /** 通常トラックの出力メーター。OSC 未接続時は空配列。 */
+    readMeters: () => Promise<MeterSummary[]>
 }
 
 export function defaultVirtualLabelSources(deps: ServerDeps): VirtualLabelSources {
@@ -111,6 +114,34 @@ export function defaultVirtualLabelSources(deps: ServerDeps): VirtualLabelSource
                 return null
             }
         },
+        async readMeters() {
+            if (!deps.runtime.oscConnected()) {
+                return []
+            }
+            try {
+                const routing = deps.runtime.requireRouting()
+                const names = await routing.listTrackNames()
+                const observed_at = new Date().toISOString()
+                const meters: MeterSummary[] = []
+                for (const index of names.keys()) {
+                    const level = await routing.getOutputMeterLevel(index)
+                    const left = await routing.getOutputMeterLeft(index)
+                    const right = await routing.getOutputMeterRight(index)
+                    meters.push({
+                        trackIndex: index,
+                        trackName: names[index] ?? "",
+                        level,
+                        left,
+                        right,
+                        observedAt: observed_at,
+                    })
+                }
+                return meters
+            } catch (error) {
+                deps.log.warn("Meter read failed", { error: String(error) })
+                return []
+            }
+        },
     }
 }
 
@@ -120,6 +151,7 @@ export function createLomGraphAdapter(
         listWriteEvents: async () => [],
         listRenderJobs: async () => [],
         readTransport: async () => null,
+        readMeters: async () => [],
     },
 ): LomGraphAdapter {
     return new LomGraphAdapter(context, sources)
@@ -131,11 +163,16 @@ export function createAdapterFromDeps(deps: ServerDeps): LomGraphAdapter {
 
 export type VirtualNode = {
     type: "virtual"
-    label: "WriteEvent" | "RenderJob" | "Transport"
+    label: "WriteEvent" | "RenderJob" | "Transport" | "Meter"
     id: string
     properties: Record<string, ScalarValue>
 }
 
 export function isVirtualLabel(label: string): boolean {
-    return label === "WriteEvent" || label === "RenderJob" || label === "Transport"
+    return (
+        label === "WriteEvent" ||
+        label === "RenderJob" ||
+        label === "Transport" ||
+        label === "Meter"
+    )
 }

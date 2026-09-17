@@ -57,6 +57,10 @@ export type AudioArtifact = {
     sha256: string
     durationSeconds: number
     sampleFormat: string
+    /** VU 相当（RMS dBFS）。無音は null。 */
+    rmsDbfs?: number | null
+    /** サンプルピーク（dBFS）。無音は null。 */
+    peakDbfs?: number | null
 }
 
 /** RenderJob 仮想ラベルが返すレコード。 */
@@ -157,10 +161,20 @@ export type CaptureTrackIdentity = {
 }
 
 /** OSC メッセージの引数。 */
-export type OscArg = string | number | boolean
-
+export type OscArg = string | number | boolean | null
 /** OSC 応答メッセージ。 */
 export type OscMessage = {
     address: string
     args: OscArg[]
+}
+
+/** トラック出力メーターのスナップショット。 */
+export type MeterSummary = {
+    trackIndex: number
+    trackName: string
+    /** 0..1 のリニア値。 */
+    level: number
+    left: number
+    right: number
+    observedAt: string
 }
