@@ -21,6 +21,8 @@ const PLAY_TIMEOUT_MS = 10_000
 const STOP_TIMEOUT_MS = 10_000
 const MEASURE_OVERHEAD_MS = 5_000
 const MEASURE_SETTLE_MS = 800
+const METER_DECAY_TIMEOUT_MS = 4_000
+const METER_DECAY_THRESHOLD = 0.005
 const MIN_PARAMETER_STEP = 1e-4
 const WRITE_TOLERANCE = 0.01
 const AUTO_CREST_THRESHOLD_DB = 12
@@ -105,6 +107,18 @@ export async function measureTrackMeter(
         await transport.setPunchIn(false)
         await transport.setPunchOut(false)
         await transport.seek(0)
+        // 停止中にメーターが減衰するのを待つ（リリース値が残ると過小補正になる）。
+        const decay_deadline = Date.now() + METER_DECAY_TIMEOUT_MS
+        for (;;) {
+            const residual = await routing.getOutputMeterLevel(index)
+            if (!Number.isFinite(residual) || residual <= METER_DECAY_THRESHOLD) {
+                break
+            }
+            if (Date.now() > decay_deadline) {
+                break
+            }
+            await sleep(100)
+        }
         transport.play()
         await transport.waitForPlaying(PLAY_TIMEOUT_MS)
         // メーターのリリース遅れで前の値が残るため、整定してから採取する。
@@ -515,6 +529,7 @@ export async function executeGainstage(
         }
         const measure = () => measureTrackMeter(deps, index, deps.runtime.gainstageMeasureBeats())
         const stages: Record<string, unknown>[] = []
+        const applied_stages: { label: string; restore: () => Promise<void> }[] = []
         try {
             for (let stage = 0; stage < devices.length; stage++) {
                 const device = devices[stage]
@@ -543,20 +558,45 @@ export async function executeGainstage(
                         effective_target = target_db + AUTO_PEAK_OFFSET_DB
                     }
                 }
-                const result = await convergeBisection(
-                    deps,
-                    {
-                        label: `${device.name}.${gain.name}`,
-                        min: gain.min,
-                        max: gain.max,
-                        getValue: () => gain.getValue(),
-                        setValue: (value) => gain.setValue(value),
-                    },
-                    measure,
-                    effective_target,
-                    metric,
-                    `${device.name}.${gain.name} did not measurably change the stage level; the value was restored.`,
-                )
+                let result: ConvergenceResult
+                try {
+                    result = await convergeBisection(
+                        deps,
+                        {
+                            label: `${device.name}.${gain.name}`,
+                            min: gain.min,
+                            max: gain.max,
+                            getValue: () => gain.getValue(),
+                            setValue: (value) => gain.setValue(value),
+                        },
+                        measure,
+                        effective_target,
+                        metric,
+                        `${device.name}.${gain.name} did not measurably change the stage level; the value was restored.`,
+                    )
+                } catch (error) {
+                    if (error instanceof HybridError && error.code === "GAINSTAGE_NOT_CONVERGED") {
+                        stages.push({
+                            device: device.name,
+                            param: gain.name,
+                            status: "skipped",
+                            reason: error.message,
+                        })
+                        deps.log.warn("gainstage.chain stage skipped", {
+                            track: track_name,
+                            device: device.name,
+                            param: gain.name,
+                            reason: error.message,
+                        })
+                        continue
+                    }
+                    throw error
+                }
+                const original_value = result.originalValue
+                applied_stages.push({
+                    label: `${device.name}.${gain.name}`,
+                    restore: () => gain.setValue(original_value),
+                })
                 stages.push({
                     device: device.name,
                     param: gain.name,
@@ -579,6 +619,19 @@ export async function executeGainstage(
                     converged: result.converged,
                 })
             }
+        } catch (error) {
+            // 途中で失敗したら、収束済みの段ゲインも元へ戻して中途半端な音を残さない。
+            for (const applied of applied_stages.reverse()) {
+                try {
+                    await applied.restore()
+                } catch (restore_error) {
+                    deps.log.warn("chain stage restore failed", {
+                        label: applied.label,
+                        error: String(restore_error),
+                    })
+                }
+            }
+            throw error
         } finally {
             for (let j = 0; j < handles.length; j++) {
                 try {
